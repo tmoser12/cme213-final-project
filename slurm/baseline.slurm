@@ -17,8 +17,7 @@
 
 set -e
 
-module load course/cme213/nvhpc/24.1
-source .venv/bin/activate
+source activate cme213
 
 echo "Job ID    : $SLURM_JOB_ID"
 echo "Node      : $SLURMD_NODENAME"

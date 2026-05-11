@@ -5,14 +5,14 @@ Tobias Moser · Eli Wandless
 
 ```bash
 # 1. Clone / init repo, then from project root:
-bash setup.sh                         # create .venv, install deps
+bash setup.sh                         # pip install into conda env cme213
 
 # 2. Download model weights (~15 GB total, ~10-20 min depending on network)
 bash scripts/download_models.sh
 
 # 3. Verify both models load and produce output on a GPU node
 srun --partition=gpu-turing --gres=gpu:1 --pty \
-     bash -c "source .venv/bin/activate && python scripts/verify_env.py"
+     bash -c "source activate cme213 && python scripts/verify_env.py"
 ```
 
 Expected verify_env.py output:
@@ -56,7 +56,7 @@ tail -f logs/baseline_<JOBID>.out
 # Or run interactively (faster feedback during development)
 bash slurm/interactive.sh
 # Then inside the GPU shell:
-source .venv/bin/activate
+source activate cme213
 python benchmarks/run_baseline.py --model 7b --trials 3   # quick check
 python benchmarks/run_baseline.py --model both            # full run
 

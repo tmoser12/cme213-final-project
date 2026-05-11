@@ -9,16 +9,16 @@
 
 set -e
 
-source .venv/bin/activate
+source activate cme213
 
 echo "Downloading Qwen2.5-7B-Instruct (~14 GB)..."
-huggingface-cli download Qwen/Qwen2.5-7B-Instruct \
+hf download Qwen/Qwen2.5-7B-Instruct \
     --include "*.safetensors" "*.json" "*.txt" \
     --repo-type model
 
 echo ""
 echo "Downloading Qwen2.5-0.5B-Instruct (~1 GB)..."
-huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct \
+hf download Qwen/Qwen2.5-0.5B-Instruct \
     --include "*.safetensors" "*.json" "*.txt" \
     --repo-type model
 
