@@ -133,5 +133,22 @@ def main():
         
     # Save a markdown report!
 ```
+---
 
-**Final Step:** Once the benchmark proves your kernel is correct and fast, add `--patch-swiglu` to your `scripts/run_patched_model.py` to trigger the `patch_model()` function, and run the full end-to-end evaluation!
+## Step 5: Execution Script (`run_benchmark.sh`)
+Because PyTorch eagerly caches JIT-compiled C++ extensions, you must clear the cache every time you modify `kernel.cu` or `bindings.cpp`. To automate this, create a standard bash script in your kernel folder that clears the cache and submits the benchmark to SLURM.
+
+```bash
+# src/kernels/swiglu/run_benchmark.sh
+#!/bin/bash
+cd "$(dirname "$0")/../../.." || exit
+source setup.sh
+
+KERNEL_DIR=$(basename "$(dirname "$0")")
+echo "Clearing PyTorch JIT cache for custom_${KERNEL_DIR}_ops..."
+rm -rf ~/.cache/torch_extensions/py311_cu121/custom_${KERNEL_DIR}_ops
+
+srun --partition=gpu-turing --gres=gpu:1 python -m src.kernels.${KERNEL_DIR}.benchmark
+```
+
+**Final Step:** Once the script proves your kernel is correct and fast, add `--patch-swiglu` to your `scripts/run_patched_model.py` to trigger the `patch_model()` function, and run the full end-to-end evaluation!

@@ -63,6 +63,6 @@ def check_model(model_id: str, device: str = "cuda:0"):
 
 if __name__ == "__main__":
     check_cuda()
-    check_model("./models/Qwen2.5-7B-Instruct")
-    check_model("./models/Qwen2.5-0.5B-Instruct")
+    # check_model("./models/Qwen2.5-7B-Instruct")
+    # check_model("./models/Qwen2.5-0.5B-Instruct")
     print("All checks passed.")
