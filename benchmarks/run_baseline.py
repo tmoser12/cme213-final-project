@@ -31,8 +31,8 @@ from src.inference.autoregressive import greedy_decode
 from src.utils.benchmarking import run_trials, summarise, print_stats
 
 MODELS = {
-    "7b":  "Qwen/Qwen2.5-7B-Instruct",
-    "0.5b": "Qwen/Qwen2.5-0.5B-Instruct",
+    "7b":  "./models/Qwen2.5-7B-Instruct",
+    "0.5b": "./models/Qwen2.5-0.5B-Instruct",
 }
 
 

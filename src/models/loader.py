@@ -22,7 +22,7 @@ def load_model(model_id: str, device: str) -> ModelBundle:
     Load model + tokenizer in FP16.
 
     Args:
-        model_id: HuggingFace model ID, e.g. "Qwen/Qwen2.5-7B-Instruct"
+        model_id: Model ID or local path, e.g. "./models/Qwen2.5-7B-Instruct"
         device:   CUDA device string, e.g. "cuda:0" or "cuda:1"
 
     Returns:
