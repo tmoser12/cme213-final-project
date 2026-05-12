@@ -11,6 +11,9 @@ fi
 # Activate the project environment
 conda activate cme213
 
+# Load modern GCC for PyTorch C++ extensions
+module load gnu12/12.3.0
+
 # Set environment variables for the flattened model paths
 export PROJECT_ROOT="/home/cme213/tobiascm/cme213-final-project"
 export QWEN_7B_PATH="$PROJECT_ROOT/models/Qwen2.5-7B-Instruct"

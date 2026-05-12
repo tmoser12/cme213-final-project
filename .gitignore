@@ -1,3 +1,12 @@
 results/*
 logs/*
-models/Qwen*
+models/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv/
