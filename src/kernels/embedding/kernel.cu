@@ -8,6 +8,7 @@
 // Pure gather: output is bit-exact equal to the PyTorch reference.
 
 #include <torch/extension.h>
+#include <c10/cuda/CUDAException.h>   // C10_CUDA_KERNEL_LAUNCH_CHECK
 #include <cuda_fp16.h>
 #include <cstdint>
 

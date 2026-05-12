@@ -11,9 +11,8 @@ If JIT picks up a stale build after editing the .cu, nuke the cache:
 """
 
 import os
+import shutil
 from pathlib import Path
-
-from torch.utils.cpp_extension import load
 
 
 _NVHPC_MARKERS = ("nvidia-hpc-sdk", "/nvhpc/")
@@ -54,14 +53,33 @@ def _sanitize_env_for_nvcc() -> None:
         if val and _looks_like_nvhpc(val):
             del os.environ[var]
 
-    # 3. Pin target arch so we don't generate cubins we'll never use, and
+    # 3. Pin CUDA_HOME from the now-clean PATH so torch.utils.cpp_extension's
+    # _find_cuda_home() doesn't fall back to /usr/local/cuda or anything else
+    # unexpected. nvcc lives at $CUDA_HOME/bin/nvcc by convention.
+    if "CUDA_HOME" not in os.environ:
+        nvcc_path = shutil.which("nvcc")
+        if nvcc_path:
+            os.environ["CUDA_HOME"] = str(Path(nvcc_path).resolve().parent.parent)
+
+    # 4. Pin target arch so we don't generate cubins we'll never use, and
     # silence torch's "TORCH_CUDA_ARCH_LIST not set" warning.
     # 7.5 = Quadro RTX 6000 (Turing).
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "7.5")
 
 
+# CRITICAL: scrub the env BEFORE importing torch.utils.cpp_extension.
+# That module caches CUDA_HOME at first import via _find_cuda_home(), and
+# never re-reads it. If we sanitize later (e.g. inside load_embedding_ops),
+# torch will already have locked in NVHPC's nvcc path.
+_sanitize_env_for_nvcc()
+
+from torch.utils.cpp_extension import load  # noqa: E402
+
+
 def load_embedding_ops():
     """Compile (if needed) and return the embedding extension module."""
+    # Re-run for safety: cheap, idempotent, catches anything that mutated
+    # the env between import and call time.
     _sanitize_env_for_nvcc()
 
     here = Path(__file__).resolve().parent
