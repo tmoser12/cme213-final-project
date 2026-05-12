@@ -1,11 +1,11 @@
-// kernels/embedding.cu
+// src/kernels/embedding/kernel.cu
 // Custom CUDA embedding (indexed row gather) for Qwen2.5.
 //
-// Semantics: out[b, t, :] = weight[input_ids[b, t], :]
+// Semantics: out[..., :] = weight[input_ids[...], :]
 // Matches torch.nn.functional.embedding for the no-padding_idx, no-scale,
-// no-renorm case, which is all Qwen2.5's embed_tokens does.
+// no-renorm case -- which is all Qwen2's embed_tokens does at inference.
 //
-// Pure gather -> output is bit-exact equal to the PyTorch reference.
+// Pure gather: output is bit-exact equal to the PyTorch reference.
 
 #include <torch/extension.h>
 #include <cuda_fp16.h>
@@ -15,7 +15,7 @@ namespace {
 
 // One block per output token. Threads in the block stride across the hidden
 // dimension to copy one row of `weight` into one row of `output`. With H=3584
-// and blockDim.x=128 each thread touches 28 halves; the per-warp loads are
+// and blockDim.x=128 each thread touches 28 halves; per-warp loads are
 // contiguous so global memory accesses are fully coalesced.
 __global__ void embedding_kernel(
     const int64_t* __restrict__ input_ids,  // [N]
@@ -40,19 +40,18 @@ __global__ void embedding_kernel(
 
 
 torch::Tensor embedding_forward(torch::Tensor input_ids, torch::Tensor weight) {
-    TORCH_CHECK(input_ids.is_cuda(),         "input_ids must be CUDA");
-    TORCH_CHECK(weight.is_cuda(),            "weight must be CUDA");
+    TORCH_CHECK(input_ids.is_cuda(),       "input_ids must be CUDA");
+    TORCH_CHECK(weight.is_cuda(),          "weight must be CUDA");
     TORCH_CHECK(input_ids.device() == weight.device(),
                 "input_ids and weight must be on the same device");
-    TORCH_CHECK(weight.dim() == 2,           "weight must be 2-D [V, H]");
+    TORCH_CHECK(weight.dim() == 2,         "weight must be 2-D [V, H]");
     TORCH_CHECK(weight.scalar_type() == torch::kHalf,
                 "weight must be float16");
     TORCH_CHECK(input_ids.scalar_type() == torch::kLong,
                 "input_ids must be int64");
-    TORCH_CHECK(input_ids.is_contiguous(),   "input_ids must be contiguous");
-    TORCH_CHECK(weight.is_contiguous(),      "weight must be contiguous");
+    TORCH_CHECK(input_ids.is_contiguous(), "input_ids must be contiguous");
+    TORCH_CHECK(weight.is_contiguous(),    "weight must be contiguous");
 
-    const int64_t V = weight.size(0);
     const int64_t H = weight.size(1);
     const int64_t N = input_ids.numel();
 
@@ -64,22 +63,12 @@ torch::Tensor embedding_forward(torch::Tensor input_ids, torch::Tensor weight) {
     if (N == 0) return output;
 
     const int threads = 128;
-    const dim3 grid(static_cast<unsigned int>(N));
-
-    embedding_kernel<<<grid, threads>>>(
+    embedding_kernel<<<static_cast<unsigned int>(N), threads>>>(
         input_ids.data_ptr<int64_t>(),
         reinterpret_cast<const __half*>(weight.data_ptr<at::Half>()),
         reinterpret_cast<__half*>(output.data_ptr<at::Half>()),
         N, H);
 
-    // Surface launch errors immediately during correctness testing.
     C10_CUDA_KERNEL_LAUNCH_CHECK();
-    (void)V;  // silence unused when assertions are off
     return output;
-}
-
-
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("embedding_forward", &embedding_forward,
-          "Qwen embedding gather (CUDA, fp16)");
 }

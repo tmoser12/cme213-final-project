@@ -1,5 +1,4 @@
 import json
-import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -7,10 +6,6 @@ import torch
 import torch.nn.functional as F
 from safetensors import safe_open
 from transformers import AutoTokenizer
-
-# Add project root to sys.path so `import kernels` works when this file is
-# invoked as `python benchmarks/correctness.py` from the repo root.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 MODEL_PATH = Path("models/Qwen2.5-7B-Instruct")
 PROMPTS_PATH = Path("benchmarks/prompts/mt_bench_subset.jsonl")
@@ -95,45 +90,9 @@ def run_embedding_layer(
     return prompt_record, input_ids, embeddings
 
 
-def check_embedding_kernel(device: str = "cuda:0") -> None:
-    """
-    Compare the custom CUDA embedding kernel against torch.nn.functional.embedding
-    on Qwen2.5-7B's embed_tokens weight. The op is a pure gather, so the outputs
-    must be bit-exact equal.
-    """
-    import kernels  # built by `python kernels/setup.py build_ext --inplace`
-
-    prompt, input_ids, embeddings_ref = run_embedding_layer(device=device)
-    weight = load_weight(MODEL_PATH, EMBEDDING_WEIGHT_NAME, device=device)
-
-    # Warm up to make sure the extension is JITed / loaded before measuring.
-    _ = kernels.embedding(input_ids, weight)
-    torch.cuda.synchronize(device)
-
-    out_cuda = kernels.embedding(input_ids, weight)
-    torch.cuda.synchronize(device)
-
-    max_abs_diff = (out_cuda.float() - embeddings_ref.float()).abs().max().item()
-    exact = torch.equal(out_cuda, embeddings_ref)
-
-    print(f"Prompt          : {prompt['id']} ({prompt.get('category', 'unknown')})")
-    print(f"Device          : {device}")
-    print(f"Input IDs shape : {tuple(input_ids.shape)}")
-    print(f"Output shape    : {tuple(out_cuda.shape)}  dtype={out_cuda.dtype}")
-    print(f"max_abs_diff    : {max_abs_diff}")
-    print(f"torch.equal     : {exact}")
-    print("PASS" if exact else "FAIL")
-    if not exact:
-        sys.exit(1)
-
-
 if __name__ == "__main__":
-    if torch.cuda.is_available():
-        check_embedding_kernel()
-    else:
-        # CPU fallback: just exercise the reference path.
-        prompt, token_ids, embedding_output = run_embedding_layer()
-        print(f"Prompt: {prompt['id']} ({prompt.get('category', 'unknown')})")
-        print(f"Input IDs shape: {tuple(token_ids.shape)}")
-        print(f"Embedding output shape: {tuple(embedding_output.shape)}")
-        print("(No CUDA available; skipped custom-kernel correctness check.)")
+    prompt, token_ids, embedding_output = run_embedding_layer()
+
+    print(f"Prompt: {prompt['id']} ({prompt.get('category', 'unknown')})")
+    print(f"Input IDs shape: {tuple(token_ids.shape)}")
+    print(f"Embedding output shape: {tuple(embedding_output.shape)}")

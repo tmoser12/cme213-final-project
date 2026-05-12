@@ -3,5 +3,10 @@ logs/*
 models/*
 
 kernels/README.md
-.DS_Store
+
+# Ai stuff
 CLAUDE.md
+
+# mac stuff
+src/.DS_Store
+.DS_Store
