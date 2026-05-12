@@ -1,138 +1,163 @@
-# Custom CUDA Kernel Development Strategy (Monkey Patching)
+# Modular CUDA Kernel Development Strategy (Monkey Patching)
 
-This document outlines the step-by-step development environment and workflow for replacing specific operations in Hugging Face models (like Qwen 7B) with custom CUDA kernels.
+Based on your requirements, the development environment should be highly modular. Every custom operation (like SwiGLU or Attention) will have its own self-contained directory containing its CUDA code, bindings, PyTorch wrapper, and isolated tests. A high-level script will then allow you to dynamically choose which of these modules to patch into the full model.
 
-## 1. Recommended Directory Structure
-
-To keep the project organized, isolate your CUDA C++ code from your Python inference logic:
+## 1. Modular Directory Structure
 
 ```text
 cme213-final-project/
 ├── src/
-│   ├── kernels/                  # All custom CUDA code
-│   │   ├── custom_swiglu.cu      # CUDA kernel implementations
-│   │   ├── bindings.cpp          # Pybind11 Python bindings
-│   │   └── jit_compile.py        # Helper to compile/load the extension
-│   ├── models/
-│   │   ├── wrappers.py           # PyTorch nn.Module wrappers for custom kernels
-│   │   └── patcher.py            # Logic to traverse model and swap modules
+│   ├── kernels/
+│   │   ├── swiglu/                   # Self-contained SwiGLU component
+│   │   │   ├── kernel.cu             # The core CUDA __global__ functions
+│   │   │   ├── bindings.cpp          # PyBind11 interface
+│   │   │   ├── jit.py                # JIT compilation logic for this specific kernel
+│   │   │   ├── wrapper.py            # Custom nn.Module that wraps the compiled kernel
+│   │   │   ├── baseline.py           # Pure PyTorch reference implementation
+│   │   │   └── test.py               # Isolated unit test (kernel vs. baseline)
+│   │   │
+│   │   ├── attention/                # Self-contained Attention component
+│   │   │   ├── kernel.cu
+│   │   │   └── ...
+│   │   └── ...
 │   └── inference/
 ├── scripts/
-│   ├── test_custom_kernel.py     # Isolated test for just the kernel
-│   └── verify_monkey_patch.py    # End-to-end model correctness verification
+│   └── run_patched_model.py          # Master script to patch the model and run E2E tests
 └── ...
 ```
 
-## 2. Step-by-Step Environment Setup
+## 2. Anatomy of a Kernel Module (e.g., `swiglu/`)
 
-### Step 2.1: Scaffold the CUDA Files
-Create the base files in `src/kernels/`. 
+Inside `src/kernels/swiglu/`, you will have everything needed to build and test the SwiGLU operation independently of the rest of the project.
 
-**`src/kernels/custom_swiglu.cu`**: Contains your `__global__` CUDA functions and the C++ host launcher functions.
-**`src/kernels/bindings.cpp`**: Uses `pybind11` to expose the C++ host launchers to Python.
-
-```cpp
-// Example bindings.cpp structure
-#include <torch/extension.h>
-
-// Declaration of the CUDA launcher
-torch::Tensor launch_custom_swiglu(torch::Tensor x, torch::Tensor weights);
-
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("swiglu_forward", &launch_custom_swiglu, "Custom SwiGLU forward pass");
-}
-```
-
-### Step 2.2: Set Up JIT Compilation
-Instead of writing complex `setup.py` files, use PyTorch's Just-In-Time (JIT) compiler. This automatically compiles the `.cu` files the first time you run your script and caches the `.so` binary.
-
-Create `src/kernels/jit_compile.py`:
-
+### 2.1 JIT Compilation (`swiglu/jit.py`)
+This script only compiles the files inside its own directory.
 ```python
-import os
 from torch.utils.cpp_extension import load
 from pathlib import Path
 
-def load_custom_ops():
-    kernel_dir = Path(__file__).resolve().parent
-    
-    # This will compile the code and return a Python module
-    custom_ops = load(
-        name="qwen_custom_kernels",
-        sources=[
-            kernel_dir / "custom_swiglu.cu",
-            kernel_dir / "bindings.cpp"
-        ],
-        extra_cuda_cflags=["-O3", "--use_fast_math", "-arch=sm_75"], # Turing architecture
-        verbose=True
+def get_ops():
+    d = Path(__file__).resolve().parent
+    return load(
+        name="custom_swiglu",
+        sources=[d / "kernel.cu", d / "bindings.cpp"],
+        extra_cuda_cflags=["-O3", "--use_fast_math", "-arch=sm_75"],
     )
-    return custom_ops
 ```
 
-### Step 2.3: Implement the PyTorch Wrapper
-Create `src/models/wrappers.py`. This module acts as the bridge between Hugging Face's architecture and your custom C++ extension.
-
+### 2.2 PyTorch Wrapper (`swiglu/wrapper.py`)
+This defines the drop-in replacement module. It loads the compiled ops via `jit.py`.
 ```python
-import torch
 import torch.nn as nn
-from src.kernels.jit_compile import load_custom_ops
+from .jit import get_ops
 
-# Load the compiled kernels
-custom_ops = load_custom_ops()
+custom_ops = get_ops()
 
 class CustomQwenMLP(nn.Module):
     def __init__(self, original_mlp):
         super().__init__()
-        # Transfer the weights from the HF model
         self.gate_proj = original_mlp.gate_proj
         self.up_proj = original_mlp.up_proj
         self.down_proj = original_mlp.down_proj
-        self.act_fn = original_mlp.act_fn # e.g., silu
         
     def forward(self, x):
-        # Call your custom CUDA operation
-        # This replaces: down_proj(act_fn(gate_proj(x)) * up_proj(x))
         return custom_ops.swiglu_forward(
-            x, 
-            self.gate_proj.weight, 
-            self.up_proj.weight, 
-            self.down_proj.weight
+            x, self.gate_proj.weight, self.up_proj.weight, self.down_proj.weight
         )
+
+def patch_model(model):
+    """Entry point for the high-level script to apply this patch."""
+    for layer in model.model.layers:
+        layer.mlp = CustomQwenMLP(layer.mlp)
+    print(f"✅ Patched {len(model.model.layers)} SwiGLU layers.")
 ```
 
-### Step 2.4: Implement the Patcher
-Create `src/models/patcher.py`. This script handles the "Monkey Patching" by swapping out the specific attributes in the loaded Hugging Face model.
+### 2.3 Isolated Unit Test (`swiglu/test.py`)
+This allows you to test the kernel in a vacuum before touching the 7B model.
+```python
+import torch
+from .jit import get_ops
+from .baseline import pytorch_swiglu_reference
+
+def test():
+    ops = get_ops()
+    # 1. Generate random dummy tensors
+    # 2. Run ops.swiglu_forward(...)
+    # 3. Run pytorch_swiglu_reference(...)
+    # 4. Assert torch.allclose(...)
+    print("SwiGLU Kernel verified!")
+
+if __name__ == "__main__":
+    test()
+```
+
+## 3. High-Level Master Script (`scripts/run_patched_model.py`)
+
+This script loads the standard Hugging Face model, parses command-line arguments to determine which patches to apply, delegates the patching to the respective module wrappers, and finally runs a forward pass or benchmark.
 
 ```python
-from src.models.wrappers import CustomQwenMLP
+#!/usr/bin/env python3
+import argparse
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import sys
+from pathlib import Path
 
-def patch_qwen_model(model):
-    """
-    Replaces all MLP layers in a Qwen2.5 model with CustomQwenMLP.
-    """
-    for i, layer in enumerate(model.model.layers):
-        original_mlp = layer.mlp
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Import the patch functions from each component
+from src.kernels.swiglu.wrapper import patch_model as patch_swiglu
+# from src.kernels.attention.wrapper import patch_model as patch_attention
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model-path", type=str, default="./models/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--patch-swiglu", action="store_true", help="Replace MLP with custom SwiGLU")
+    parser.add_argument("--patch-attention", action="store_true", help="Replace Attention with custom kernel")
+    args = parser.parse_args()
+
+    print(f"Loading baseline model from {args.model_path}...")
+    model = AutoModelForCausalLM.from_pretrained(args.model_path, torch_dtype=torch.float16, device_map="cuda:0")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+
+    # ---------------------------------------------------------
+    # Apply requested patches dynamically
+    # ---------------------------------------------------------
+    if args.patch_swiglu:
+        patch_swiglu(model)
         
-        # Instantiate custom wrapper with original weights
-        custom_mlp = CustomQwenMLP(original_mlp)
+    if args.patch_attention:
+        # patch_attention(model)
+        pass
+
+    # ---------------------------------------------------------
+    # End-to-End Verification / Benchmarking
+    # ---------------------------------------------------------
+    print("Running forward pass...")
+    prompt = "The capital of France is"
+    inputs = tokenizer(prompt, return_tensors="pt").to("cuda:0")
+    
+    with torch.no_grad():
+        out = model.generate(**inputs, max_new_tokens=5, do_sample=False)
         
-        # Replace the module
-        layer.mlp = custom_mlp
-        
-    print(f"✅ Successfully patched {len(model.model.layers)} MLP layers.")
-    return model
+    print(f"Output: {tokenizer.decode(out[0])}")
+
+if __name__ == "__main__":
+    main()
 ```
 
-## 3. The Iterative Workflow
+### Example Usage:
+```bash
+# Run isolated unit test for SwiGLU
+python src/kernels/swiglu/test.py
 
-Once the environment is set up, your development loop should look like this:
+# Run the full model with NO patches (baseline)
+python scripts/run_patched_model.py
 
-1. **Edit CUDA Code**: Make changes to `src/kernels/custom_swiglu.cu`.
-2. **Clear Cache (Optional)**: If PyTorch JIT fails to detect a change, delete the cache: `rm -rf ~/.cache/torch_extensions/py311_cu121/qwen_custom_kernels`
-3. **Run Isolated Test**: Run `scripts/test_custom_kernel.py` to test the kernel with dummy random tensors. Validate it against standard PyTorch functions using `torch.allclose()`.
-4. **Run End-to-End Test**: Run `scripts/verify_monkey_patch.py`. This script should:
-   - Load the original model and save the logits for a test prompt.
-   - Run `patch_qwen_model(model)`.
-   - Run the prompt through the patched model.
-   - Assert `torch.allclose(original_logits, patched_logits, atol=1e-2)`.
-5. **Benchmark**: Once correctness is verified, run your `benchmarks/run_baseline.py` on the patched model to measure the speedup.
+# Run the full model with ONLY the SwiGLU patch
+python scripts/run_patched_model.py --patch-swiglu
+
+# Run the full model with ALL patches
+python scripts/run_patched_model.py --patch-swiglu --patch-attention
+```
