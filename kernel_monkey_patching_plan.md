@@ -14,7 +14,8 @@ cme213-final-project/
 │   │   │   ├── jit.py                # JIT compilation logic for this specific kernel
 │   │   │   ├── wrapper.py            # Custom nn.Module that wraps the compiled kernel
 │   │   │   ├── baseline.py           # Pure PyTorch reference implementation
-│   │   │   └── test.py               # Isolated unit test (kernel vs. baseline)
+│   │   │   ├── test.py               # Isolated unit test (kernel vs. baseline)
+│   │   │   └── benchmark.py          # Micro-benchmark (Eager vs. cuBLAS vs. Custom)
 │   │   │
 │   │   ├── attention/                # Self-contained Attention component
 │   │   │   ├── kernel.cu
@@ -73,7 +74,7 @@ def patch_model(model):
 ```
 
 ### 2.3 Isolated Unit Test (`swiglu/test.py`)
-This allows you to test the kernel in a vacuum before touching the 7B model.
+This allows you to test the kernel in a vacuum before touching the 7B model. Ensure you use `torch.allclose()` to verify numerical stability against the naive PyTorch implementation.
 ```python
 import torch
 from .jit import get_ops
@@ -90,6 +91,23 @@ def test():
 if __name__ == "__main__":
     test()
 ```
+
+### 2.4 Micro-Benchmarking (`swiglu/benchmark.py`)
+Once correctness is verified, you should benchmark your kernel against **two** baselines to establish the full performance picture:
+
+1. **The Lower Bound (PyTorch Eager):** Compare against the naive PyTorch implementation (e.g., standard math operations without `torch.compile`). This proves your kernel works and overcomes standard Python overhead.
+2. **The Upper Bound (Optimized Backend):** Compare against the highly optimized backend (e.g., `cuBLAS` for GEMMs, or xFormers SDPA for Attention). This shows how close your hand-written kernel gets to industry-standard, hand-tuned CUDA code.
+
+```python
+import torch
+import time
+# setup tensors...
+
+# 1. Time Eager PyTorch
+# 2. Time Optimized Backend (cuBLAS/SDPA)
+# 3. Time Custom Kernel
+```
+
 
 ## 3. High-Level Master Script (`scripts/run_patched_model.py`)
 
