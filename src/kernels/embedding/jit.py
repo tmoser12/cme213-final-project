@@ -16,28 +16,53 @@ from pathlib import Path
 from torch.utils.cpp_extension import load
 
 
-def _strip_nvhpc_from_path() -> None:
-    """
-    Remove any PATH entry containing 'nvidia-hpc-sdk' or '/nvhpc/' so the
-    extension build picks the stock CUDA nvcc instead of NVHPC's.
+_NVHPC_MARKERS = ("nvidia-hpc-sdk", "/nvhpc/")
 
-    Why: NVHPC's nvcc only supports `nvc++` as its host compiler, which is
-    ABI-incompatible with the PyTorch wheel (built with g++/libstdc++ ABI 0).
-    The cluster's `course/cme213/nvhpc/24.1` module prepends NVHPC to PATH and
-    triggers an unrecoverable "Unsupported NVHPC compiler" error from nvcc.
-    Stripping those entries here is idempotent and harmless when the module
-    isn't loaded.
+
+def _looks_like_nvhpc(value: str) -> bool:
+    return any(marker in value for marker in _NVHPC_MARKERS)
+
+
+def _sanitize_env_for_nvcc() -> None:
     """
+    Scrub NVHPC paths from the build environment so torch.utils.cpp_extension
+    picks the stock CUDA toolkit (cuda/12.2 module) + g++ (gnu12 module),
+    not NVHPC's nvcc + nvc++.
+
+    Why: the cluster's `course/cme213/nvhpc/24.1` module sets PATH plus
+    CC=nvc, CXX=nvc++, CUDA_HOME=<nvhpc cuda>. NVHPC's nvcc rejects every
+    host compiler except `nvc++`, and `nvc++` identifies as GCC 8.x which
+    fails PyTorch 2.4's "GCC >= 9" version check. PATH-stripping alone is
+    insufficient -- the explicit CC/CXX/CUDA_HOME env vars beat PATH-based
+    discovery -- so we also unset them when they point into NVHPC.
+
+    Idempotent: a noop when the course module isn't loaded.
+    """
+    # 1. Drop NVHPC entries from PATH so `which nvcc` / `which g++` resolve
+    # to the stock toolchain.
     kept = [
         entry for entry in os.environ.get("PATH", "").split(os.pathsep)
-        if "nvidia-hpc-sdk" not in entry and "/nvhpc/" not in entry
+        if not _looks_like_nvhpc(entry)
     ]
     os.environ["PATH"] = os.pathsep.join(kept)
+
+    # 2. Unset compiler / CUDA env vars iff they point at NVHPC. After this,
+    # torch falls back to PATH-based discovery, which now finds cuda/12.2's
+    # nvcc and gnu12's g++.
+    for var in ("CC", "CXX", "CUDA_HOME", "CUDA_PATH", "NVCC_CCBIN"):
+        val = os.environ.get(var)
+        if val and _looks_like_nvhpc(val):
+            del os.environ[var]
+
+    # 3. Pin target arch so we don't generate cubins we'll never use, and
+    # silence torch's "TORCH_CUDA_ARCH_LIST not set" warning.
+    # 7.5 = Quadro RTX 6000 (Turing).
+    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "7.5")
 
 
 def load_embedding_ops():
     """Compile (if needed) and return the embedding extension module."""
-    _strip_nvhpc_from_path()
+    _sanitize_env_for_nvcc()
 
     here = Path(__file__).resolve().parent
     return load(
