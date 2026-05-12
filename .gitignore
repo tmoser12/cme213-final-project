@@ -1,3 +1,7 @@
 results/*
 logs/*
 models/*
+
+kernels/README.md
+.DS_Store
+CLAUDE.md
