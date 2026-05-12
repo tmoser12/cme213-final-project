@@ -15,6 +15,7 @@ echo "Setup complete. Activate with: source activate cme213"
 echo "Then run: python scripts/verify_env.py  (on a GPU node)"
 
 # First-time conda on the cluster (if `conda` / `activate` are missing):
+#   module load gnu12/12.3.0
 #   eval "$(/opt/ohpc/pub/compiler/anaconda3/2023.09-0/bin/conda shell.bash hook)"
 #   conda init
 #   source ~/.bashrc

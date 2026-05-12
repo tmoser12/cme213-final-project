@@ -57,6 +57,8 @@ def main() -> None:
     # 2. Size an nn.Embedding from Qwen2Config; fill it with the real weight.
     config = Qwen2Config.from_pretrained(MODEL_PATH)
     weight = load_weight(MODEL_PATH, EMBEDDING_WEIGHT_NAME, device=device)
+    if weight.dtype != torch.float16:
+        weight = weight.to(torch.float16)
     assert weight.shape == (config.vocab_size, config.hidden_size), (
         f"weight {tuple(weight.shape)} mismatches config "
         f"({config.vocab_size}, {config.hidden_size})"

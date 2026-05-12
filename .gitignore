@@ -10,3 +10,7 @@ CLAUDE.md
 # mac stuff
 src/.DS_Store
 .DS_Store
+
+# pycaches 
+*__pycache__/
+*__pycache__/*
