@@ -1,7 +1,18 @@
+import argparse
 import torch
 from pathlib import Path
 from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm
 from src.kernels.rmsnorm.wrapper import CustomQwenRMSNorm
+
+# Shape sweep used by both timing benchmarks and the ncu profile path.
+CONFIGS = [
+    (1, 1),      # Auto-regressive decoding phase
+    (1, 128),    # Short prompt
+    (2, 128),    # Batched short prompt
+    (8, 128),
+    (8, 512),    # Medium prompt
+    (16, 1024),  # Long batched prompt
+]
 
 def run_benchmark_for_config(batch_size, seq_len, hidden_size, hf_baseline, hf_compiled, custom_module):
     # Dummy input
@@ -54,27 +65,51 @@ def run_benchmark_for_config(batch_size, seq_len, hidden_size, hf_baseline, hf_c
     
     return hf_time, comp_time, custom_time
 
+def profile_main(hidden_size=3584, batch_size=8, seq_len=128):
+    """Minimal kernel-only path designed to be wrapped by Nsight Compute (ncu).
+
+    Skips the HF eager/compiled paths and the 5000-iter timing loops — ncu
+    replays the captured launch many times under the hood, so a single
+    launch on the host side keeps the .ncu-rep small and the capture fast.
+    The launch is wrapped in an NVTX range so it shows up labeled in the
+    Nsight Compute GUI.
+    """
+    print("Initializing module for profiling...")
+    hf_baseline = Qwen2RMSNorm(hidden_size=hidden_size, eps=1e-6).cuda().half()
+    custom_module = CustomQwenRMSNorm(hf_baseline).cuda()
+
+    x = torch.randn(batch_size, seq_len, hidden_size, dtype=torch.float16, device="cuda")
+
+    # Warmup OUTSIDE the NVTX range so JIT/cuBLAS init is excluded from capture.
+    # `ncu --launch-skip 5` will also skip these at the kernel-launch level.
+    print("Warming up (outside NVTX range)...")
+    with torch.no_grad():
+        for _ in range(5):
+            custom_module(x)
+    torch.cuda.synchronize()
+
+    print(f"Launching captured kernel at B={batch_size}, S={seq_len} inside NVTX range...")
+    tag = f"rmsnorm/B{batch_size}_S{seq_len}"
+    with torch.no_grad():
+        torch.cuda.nvtx.range_push(tag)
+        custom_module(x)
+        torch.cuda.nvtx.range_pop()
+    torch.cuda.synchronize()
+    print("✅ Profile workload done.")
+
+
 def main():
     print("Initializing models and triggering JIT compilations...")
     hidden_size = 3584
-    
+
     hf_baseline = Qwen2RMSNorm(hidden_size=hidden_size, eps=1e-6).cuda().half()
     hf_compiled = torch.compile(hf_baseline)
     custom_module = CustomQwenRMSNorm(hf_baseline).cuda()
-    
-    configs = [
-        (1, 1),      # Auto-regressive decoding phase
-        (1, 128),    # Short prompt
-        (2, 128),    # Batched short prompt
-        (8, 128),
-        (8, 512),    # Medium prompt
-        (16, 1024),  # Long batched prompt
-    ]
-    
+
     results = []
-    
+
     print("\nStarting benchmarks...")
-    for batch_size, seq_len in configs:
+    for batch_size, seq_len in CONFIGS:
         print(f"Benchmarking Batch Size = {batch_size:2d}, Sequence Length = {seq_len:4d}...")
         hf_time, comp_time, custom_time = run_benchmark_for_config(
             batch_size, seq_len, hidden_size, hf_baseline, hf_compiled, custom_module
@@ -106,4 +141,14 @@ def main():
     print("\n" + report)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Run a minimal single-launch workload for Nsight Compute (ncu) capture.",
+    )
+    args = parser.parse_args()
+    if args.profile:
+        profile_main()
+    else:
+        main()

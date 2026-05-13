@@ -2,9 +2,9 @@
 # setup.sh -- SOURCING this file activates the environment and sets model paths.
 # Usage: source setup.sh
 
-# Initialize Conda hook if conda command is not already available
+# Initialize the Conda shell function
 CONDA_PATH="/opt/ohpc/pub/compiler/anaconda3/2023.09-0"
-if ! command -v conda &> /dev/null; then
+if ! declare -F conda > /dev/null; then
     eval "$($CONDA_PATH/bin/conda shell.bash hook)"
 fi
 
