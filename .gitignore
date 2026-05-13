@@ -2,10 +2,12 @@ results/*
 logs/*
 models/*
 
-kernels/README.md
+# user specific
+setup.sh
 
 # Ai stuff
 CLAUDE.md
+.claude/*
 
 # mac stuff
 src/.DS_Store

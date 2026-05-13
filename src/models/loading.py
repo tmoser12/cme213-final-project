@@ -1,18 +1,22 @@
+"""
+src/models/loading.py
+Shared helpers for loading Qwen2.5 weights from disk and prompts from the
+benchmark JSONL files.
+"""
+
 import json
 from pathlib import Path
 from typing import Iterable
 
 import torch
-import torch.nn.functional as F
 from safetensors import safe_open
-from transformers import AutoTokenizer
 
-MODEL_PATH = Path("models/Qwen2.5-7B-Instruct")
-PROMPTS_PATH = Path("benchmarks/prompts/mt_bench_subset.jsonl")
-EMBEDDING_WEIGHT_NAME = "model.embed_tokens.weight"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+MODEL_PATH = REPO_ROOT / "models" / "Qwen2.5-7B-Instruct"
+PROMPTS_PATH = REPO_ROOT / "benchmarks" / "prompts" / "mt_bench_subset.jsonl"
 
 WeightName = str
-
 
 def load_prompt(path: Path = PROMPTS_PATH, prompt_index: int = 0) -> dict:
     """Load one prompt record from a JSONL prompt file."""
@@ -33,7 +37,7 @@ def _as_weight_list(weight_names: WeightName | Iterable[WeightName]) -> list[Wei
 
 def load_weights(
     model_path: Path = MODEL_PATH,
-    weight_names: WeightName | Iterable[WeightName] = EMBEDDING_WEIGHT_NAME,
+    weight_names: WeightName | Iterable[WeightName] = (),
     device: torch.device | str | None = None,
 ) -> dict[WeightName, torch.Tensor]:
     """Load one or more tensors from the model's sharded safetensors files."""
@@ -63,36 +67,8 @@ def load_weights(
 
 def load_weight(
     model_path: Path = MODEL_PATH,
-    weight_name: WeightName = EMBEDDING_WEIGHT_NAME,
+    weight_name: WeightName = "",
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
     """Load a single tensor by name."""
     return load_weights(model_path, weight_name, device=device)[weight_name]
-
-
-def run_embedding_layer(
-    model_path: Path = MODEL_PATH,
-    prompts_path: Path = PROMPTS_PATH,
-    prompt_index: int = 0,
-    device: torch.device | str = "cpu",
-) -> tuple[dict, torch.Tensor, torch.Tensor]:
-    """Tokenize one prompt and pass its token IDs through the embedding layer."""
-    prompt_record = load_prompt(prompts_path, prompt_index=prompt_index)
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    encoded = tokenizer(prompt_record["prompt"], return_tensors="pt")
-
-    input_ids = encoded["input_ids"].to(device)
-    embedding_weight = load_weight(model_path, EMBEDDING_WEIGHT_NAME, device=device)
-
-    with torch.no_grad():
-        embeddings = F.embedding(input_ids, embedding_weight)
-
-    return prompt_record, input_ids, embeddings
-
-
-if __name__ == "__main__":
-    prompt, token_ids, embedding_output = run_embedding_layer()
-
-    print(f"Prompt: {prompt['id']} ({prompt.get('category', 'unknown')})")
-    print(f"Input IDs shape: {tuple(token_ids.shape)}")
-    print(f"Embedding output shape: {tuple(embedding_output.shape)}")

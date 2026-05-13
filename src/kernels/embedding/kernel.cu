@@ -19,13 +19,13 @@ namespace {
 // and blockDim.x=128 each thread touches 28 halves; per-warp loads are
 // contiguous so global memory accesses are fully coalesced.
 __global__ void embedding_kernel(
-    const int64_t* __restrict__ input_ids,  // [N]
-    const __half*  __restrict__ weight,     // [V, H]
-    __half*        __restrict__ output,     // [N, H]
+    const int64_t* __restrict__ input_ids,  // [N] (seq_len)
+    const __half*  __restrict__ weight,     // [V, H] (152K, 3584)
+    __half*        __restrict__ output,     // [N, H] (seq_len, 3584)
     int64_t N,
     int64_t H)
 {
-    int64_t n = blockIdx.x;
+    int64_t n = blockIdx.x; 
     if (n >= N) return;
 
     int64_t id = input_ids[n];
@@ -53,11 +53,11 @@ torch::Tensor embedding_forward(torch::Tensor input_ids, torch::Tensor weight) {
     TORCH_CHECK(input_ids.is_contiguous(), "input_ids must be contiguous");
     TORCH_CHECK(weight.is_contiguous(),    "weight must be contiguous");
 
-    const int64_t H = weight.size(1);
-    const int64_t N = input_ids.numel();
+    const int64_t H = weight.size(1); // 3584, hidden_dim
+    const int64_t N = input_ids.numel(); // seq_len
 
     // Output shape: input_ids.shape + (H,)
-    auto out_shape = input_ids.sizes().vec();
+    auto out_shape = input_ids.sizes().vec(); // [seq_len, H]
     out_shape.push_back(H);
     auto output = torch::empty(out_shape, weight.options());
 
