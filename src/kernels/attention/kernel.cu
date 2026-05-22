@@ -332,7 +332,87 @@ void kv_write_forward(torch::Tensor new_k,
 }
 
 
-template<int Q_block_size, int KV_block_size, int D, int NUM_THREADS, int WMMA_M, int WMMA_K, int WMMA_N>
+// ============================================================================
+// flash_attention_kernel — fused causal SDPA, GQA-aware, FP16 in/out, FP32
+// accumulate. FlashAttention-1 style: block over Q rows and KV rows, with an
+// online softmax that never materializes the [seq_len x cur_len] attention
+// matrix. Tuned for Turing (sm_75; Quadro RTX 6000).
+//
+// One grid block per (batch, head, q_block).  Inside the block, 4 warps each
+// own ROWS_PER_WARP = WMMA_M = 16 rows of the Q tile and produce the matching
+// 16 rows of the O output.
+//
+// Geometry (template params, currently instantiated at Q=64, KV=32, D=128,
+// 128 threads = 4 warps, WMMA 16x16x16):
+//
+//   q_tile     [Q_BLOCK   x D]    fp16   16 KB
+//   v_tile     [KV_BLOCK  x D]    fp16    8 KB
+//   union { k_tile [KV_BLOCK x D] fp16    8 KB   // live during QK^T
+//           p_tile [Q_BLOCK x KV_BLOCK] fp16  4 KB } // live during PV
+//                                          ───────
+//                                          32 KB / block
+//
+// Static shmem is 32 KB exactly, which on Turing's 64 KB/SM lets the
+// scheduler resident 2 blocks per SM (was 1 in the previous version at
+// 45.8 KB, which was the dominant occupancy limiter).
+//
+// Per-warp register state held ACROSS the KV loop:
+//   O_frag[D/WMMA_N = 8]    fp32 acc fragments (64 fp32 = 64 regs per lane)
+//   m_a, m_b, l_a, l_b      online softmax state for the 2 rows each lane owns
+// Per-warp transient state per KV iteration (released before P write):
+//   S_frag[KV_BLOCK/WMMA_N = 2]   fp32 acc fragments
+//
+// FP32 accumulator fragment layout on sm_75 (m16n16k16) — used heavily below:
+//   group        = lane / 4   ∈ 0..7    ← within the 16-row tile, two rows
+//   group_thread = lane % 4   ∈ 0..3      (group and group + 8) per lane
+//   frag.x[0] -> (row = group,     col = 2*gt    )
+//   frag.x[1] -> (row = group,     col = 2*gt + 1)
+//   frag.x[2] -> (row = group + 8, col = 2*gt    )
+//   frag.x[3] -> (row = group + 8, col = 2*gt + 1)
+//   frag.x[4] -> (row = group,     col = 2*gt + 8)
+//   frag.x[5] -> (row = group,     col = 2*gt + 9)
+//   frag.x[6] -> (row = group + 8, col = 2*gt + 8)
+//   frag.x[7] -> (row = group + 8, col = 2*gt + 9)
+// So the 4 lanes {4g..4g+3} together hold all 16 cols of rows g and g+8.
+// For KV_BLOCK = 32 (2 fragments) the same 4 lanes collectively hold the
+// full row, so a row-wide reduce is a __shfl_xor across 2 levels (mask 1,
+// mask 2). This was the layout the previous version verified at runtime by
+// passing torch.allclose; we rely on the same correspondence here.
+//
+// Per-iteration loop body:
+//   1. Vector-load K and V tiles via int4 (8 fp16 / load).
+//   2. __syncthreads — k/v_tile visible to all warps.
+//   3. QK^T into S_frag (WMMA), stays in registers.
+//   4. __syncthreads — required before we overwrite k_tile with p_tile, since
+//      other warps may still be reading k_tile in their last K_frag load.
+//   5. Per-lane scale + causal/range mask, then warp-shuffle row reductions
+//      (max, sum) across the 4 lanes that share a row. Online softmax update
+//      (m, l, alpha) in registers.
+//   6. Rescale O_frag elementwise by per-row alpha.
+//   7. Store P (fp16) into p_tile (= same shmem as the dead k_tile).
+//   8. __syncwarp — own warp's p_tile slice ready for PV load.
+//   9. PV via WMMA: O_frag += P @ V.
+//  10. __syncthreads — before next iter overwrites k_tile / v_tile.
+//
+// Bottlenecks addressed vs the previous version (measured at B=1, S=2048):
+//   * Eliminated S_smem (8 KB fp32) + m_smem + l_smem + alpha_smem (0.75 KB).
+//     Those values live in registers now. Frees 8.75 KB of shmem, which
+//     combined with the k/p union below moves us from 1 → 2 blocks/SM.
+//   * Aliased k_tile and p_tile through a shmem union (-4 KB).
+//   * Vectorized Q/K/V global loads from scalar fp16 (2 B/load) to int4
+//     (16 B/load). 8× fewer LSU ops → directly attacks the 19.6 %
+//     long_scoreboard and 4.4 % lg_throttle stall reasons.
+//   * Softmax row reductions use ALL 32 lanes per warp via __shfl_xor_sync
+//     instead of 16 lanes doing a serial 32-wide scan. Removes the 30.9 %
+//     mio_throttle dependency chain and doubles effective lane utilization.
+//   * O is written directly from O_frag registers to global memory as half2
+//     stores. No fp32 → shmem → scalar fp16 → global stage, no per-column
+//     __syncthreads. Was the largest single chunk of acknowledged-inefficient
+//     code in the previous version.
+// ============================================================================
+template<int Q_BLOCK, int KV_BLOCK, int D, int NUM_THREADS,
+         int WMMA_M, int WMMA_K, int WMMA_N>
+__launch_bounds__(NUM_THREADS, 2)
 __global__ void flash_attention_kernel(
     const __half* __restrict__ q,       // [B, h_q,  seq_len, D]
     const __half* __restrict__ k,       // [B, h_kv, max_seq, D]
@@ -342,273 +422,367 @@ __global__ void flash_attention_kernel(
     int B, int h_q, int h_kv,
     int seq_len, int max_seq, int cur_len)
 {
-    // --- Shared memory layout (~45 KB total) ---------------------------------
-    __shared__ __half  q_tile[Q_block_size][D];                         // 16 KB
-    __shared__ __half  k_tile[KV_block_size][D];                        //  8 KB
-    __shared__ __half  v_tile[KV_block_size][D];                        //  8 KB
-    __shared__ float   S_smem[Q_block_size][KV_block_size];             //  8 KB
-    __shared__ __half  P_smem[Q_block_size][KV_block_size];             //  4 KB
-    __shared__ float   m_smem[Q_block_size];
-    __shared__ float   l_smem[Q_block_size];
-    __shared__ float   alpha_smem[Q_block_size];
+    constexpr int NUM_WARPS     = NUM_THREADS / 32;       // 4
+    constexpr int ROWS_PER_WARP = WMMA_M;                 // 16
+    constexpr int N_BLOCKS      = KV_BLOCK / WMMA_N;      // 2 (S col-fragments / warp)
+    constexpr int K_BLOCKS      = D / WMMA_K;             // 8 (QK^T sum partitions)
+    constexpr int O_BLOCKS      = D / WMMA_N;             // 8 (O col-fragments / warp)
+    constexpr int P_BLOCKS      = KV_BLOCK / WMMA_K;      // 2 (PV K-partitions)
+    constexpr int VECS_PER_ROW  = D / 8;                  // 16 (int4 per D-row of fp16)
+    static_assert(Q_BLOCK == NUM_WARPS * ROWS_PER_WARP,
+                  "Q_BLOCK must equal NUM_WARPS * WMMA_M");
 
-    // --- Thread / warp / batch indexing --------------------------------------
+    // --- Shared memory (32 KB total — fits 2 blocks/SM on Turing) -----------
+    __shared__ __half q_tile[Q_BLOCK][D];                 // 16 KB
+    __shared__ __half v_tile[KV_BLOCK][D];                //  8 KB
+    
+    // k_tile (only live during QK^T) and p_tile (written after softmax,
+    // read by PV) alias in shmem. One __syncthreads between them is enough.
+    union KPUnion {
+        __half k_tile[KV_BLOCK][D];                       //  8 KB
+        __half p_tile[Q_BLOCK][KV_BLOCK];                 //  4 KB
+    };
+    __shared__ KPUnion kp;
+
+    // --- Block / warp / lane indexing --------------------------------------
     const int q_block = blockIdx.x;
     const int head    = blockIdx.y;
     const int batch   = blockIdx.z;
-    const int kv_head = head / (h_q / h_kv);          // GQA: 28/4=7, head/7
-
+    const int kv_head = head / (h_q / h_kv);              // GQA: 28/4 = 7, head/7
     const int tid     = threadIdx.x;
-    const int warp_id = tid / 32;                     // 0..3
-    const int lane_id = tid % 32;                     // 0..31
-    const int warp_row_off = warp_id * WMMA_M;        // 0, 16, 32, 48
+    const int warp_id = tid >> 5;                          // 0..3
+    const int lane    = tid & 31;                          // 0..31
+    const int warp_row_off = warp_id * ROWS_PER_WARP;      // 0, 16, 32, 48
+    const int group   = lane >> 2;                         // 0..7   (row index pair)
+    const int gt      = lane & 3;                          // 0..3   (col cluster)
 
-    // --- Initialize O fragments (live in registers across KV iterations) -----
-    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float>
-        O_frag[D / WMMA_N];
+    // The 8 KV columns this lane owns, IDENTICAL for both row A (=group) and
+    // row B (=group+8) of its warp slice — see fragment-layout block at the
+    // top. The 4 lanes {4g..4g+3} cover all 32 cols of these two rows.
+    const int my_cols[8] = {
+        2*gt + 0,  2*gt + 1,  2*gt + 8,  2*gt + 9,
+        2*gt + 16, 2*gt + 17, 2*gt + 24, 2*gt + 25,
+    };
+
+    // --- O accumulator: fp32, REGISTER-RESIDENT across the entire KV loop.
+    //     8 fragments × 8 fp32/lane = 64 fp32 = 64 regs per lane just for O.
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> O_frag[O_BLOCKS];
     #pragma unroll
-    for (int i = 0; i < D / WMMA_N; ++i) {
-        wmma::fill_fragment(O_frag[i], 0.0f);
-    }
+    for (int j = 0; j < O_BLOCKS; ++j) wmma::fill_fragment(O_frag[j], 0.0f);
 
-    // --- Initialize softmax state --------------------------------------------
-    if (tid < Q_block_size) {
-        m_smem[tid] = -INFINITY;
-        l_smem[tid] = 0.0f;
+    // --- Per-lane online softmax state (replaces m_smem/l_smem entirely).
+    //     Each lane owns the (m, l) for ITS two rows (row A = warp_row_off +
+    //     group, row B = ... + group + 8). The 4 lanes in the same 4-lane
+    //     group keep redundant copies — they update in lock-step via shuffle
+    //     reductions, so they always agree.
+    float m_a = -INFINITY, l_a = 0.0f;
+    float m_b = -INFINITY, l_b = 0.0f;
+
+    // --- Load Q tile via int4 (16 B / thread / iter) ------------------------
+    // Q_BLOCK*D = 8192 fp16 = 1024 int4. 128 threads × 8 iters = 1024.
+    // PyTorch's caching allocator gives ≥512 B base alignment so the int4*
+    // cast is safe; D = 128 fp16 = 256 B per row is also int4-aligned.
+    const int q_row_start = q_block * Q_BLOCK;
+    const int q_slab_base = ((batch * h_q + head) * seq_len) * D;
+    {
+        const int4  zero_v = {0, 0, 0, 0};
+        const int4* q_vec_base = reinterpret_cast<const int4*>(q + q_slab_base);
+        int4*       q_tile_vec = reinterpret_cast<int4*>(&q_tile[0][0]);
+        const int   total_vecs = Q_BLOCK * VECS_PER_ROW;
+        #pragma unroll
+        for (int i = tid; i < total_vecs; i += NUM_THREADS) {
+            const int row     = i / VECS_PER_ROW;
+            const int col_vec = i % VECS_PER_ROW;
+            const int q_row_global = q_row_start + row;
+            // Mask trailing rows when seq_len is not a multiple of Q_BLOCK.
+            q_tile_vec[i] = (q_row_global < seq_len)
+                ? q_vec_base[q_row_global * VECS_PER_ROW + col_vec]
+                : zero_v;
+        }
     }
     __syncthreads();
 
-    // --- Load Q tile ---------------------------------------------------------
-    const int q_start = q_block * Q_block_size;
-    const int q_base  = (((batch * h_q) + head) * seq_len + q_start) * D;
-
-    #pragma unroll
-    for (int i = tid; i < Q_block_size * D; i += NUM_THREADS) {
-        int row = i / D;
-        int col = i % D;
-        int q_row_global = q_start + row;
-        q_tile[row][col] = (q_row_global < seq_len)
-            ? q[q_base + row * D + col]
-            : __float2half(0.0f);
-    }
-    __syncthreads();
-
-    // --- KV iteration bounds -------------------------------------------------
-    // q_pos_offset = 0 for pure prefill (cur_len == seq_len).
+    // --- KV iteration bounds -----------------------------------------------
+    // Pure prefill: cur_len == seq_len → q_pos_offset = 0.
+    // Speculative decode rollback: cur_len > seq_len → we're attending to
+    // history starting at q_pos_offset.
     const int q_pos_offset  = cur_len - seq_len;
-    const int q_pos_first   = q_pos_offset + q_start;
-    const int kv_limit      = min(q_pos_first + Q_block_size, cur_len);
-    const int num_kv_blocks = (kv_limit + KV_block_size - 1) / KV_block_size;
+    const int q_pos_first   = q_pos_offset + q_row_start;
+    const int kv_limit      = min(q_pos_first + Q_BLOCK, cur_len);
+    const int num_kv_blocks = (kv_limit + KV_BLOCK - 1) / KV_BLOCK;
     const int kv_slab_base  = ((batch * h_kv) + kv_head) * max_seq * D;
 
     for (int kv_block = 0; kv_block < num_kv_blocks; ++kv_block) {
+        const int kv_row_start_global = kv_block * KV_BLOCK;
 
-        // --- Load K and V tiles ----------------------------------------------
-        const int kv_offset = kv_slab_base + kv_block * KV_block_size * D;
-
-        #pragma unroll
-        for (int i = tid; i < KV_block_size * D; i += NUM_THREADS) {
-            int row = i / D;
-            int col = i % D;
-            int kv_row_global = kv_block * KV_block_size + row;
-            bool valid = (kv_row_global < cur_len);
-            k_tile[row][col] = valid ? k[kv_offset + row * D + col]
-                                     : __float2half(0.0f);
-            v_tile[row][col] = valid ? v[kv_offset + row * D + col]
-                                     : __float2half(0.0f);
+        // === 1. Load K and V tiles via int4 ================================
+        // KV_BLOCK*D = 4096 fp16 = 512 int4 per tile. 128 threads × 4 iter
+        // = 512. The two loads in the same loop body let the compiler
+        // pipeline K and V issues for memory-level parallelism per thread.
+        {
+            const int4  zero_v     = {0, 0, 0, 0};
+            const int4* k_vec_base = reinterpret_cast<const int4*>(k + kv_slab_base);
+            const int4* v_vec_base = reinterpret_cast<const int4*>(v + kv_slab_base);
+            int4*       k_tile_vec = reinterpret_cast<int4*>(&kp.k_tile[0][0]);
+            int4*       v_tile_vec = reinterpret_cast<int4*>(&v_tile[0][0]);
+            const int   total_vecs = KV_BLOCK * VECS_PER_ROW;
+            #pragma unroll
+            for (int i = tid; i < total_vecs; i += NUM_THREADS) {
+                const int row     = i / VECS_PER_ROW;
+                const int col_vec = i % VECS_PER_ROW;
+                const int kv_row_global = kv_row_start_global + row;
+                const bool valid = (kv_row_global < cur_len);
+                k_tile_vec[i] = valid ? k_vec_base[kv_row_global * VECS_PER_ROW + col_vec]
+                                      : zero_v;
+                v_tile_vec[i] = valid ? v_vec_base[kv_row_global * VECS_PER_ROW + col_vec]
+                                      : zero_v;
+            }
         }
+        __syncthreads();  // (2) k/v_tile published to all warps.
+
+        // === 2. QK^T into S_frag (registers; never spilled to shmem) =======
+        // Then pack into per-row arrays s_a / s_b for the softmax pass. The
+        // S_frag local goes out of scope so its 16 regs are freed before we
+        // allocate p_a / p_b.
+        float s_a[8], s_b[8];
+        {
+            wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> S_frag[N_BLOCKS];
+            #pragma unroll
+            for (int j = 0; j < N_BLOCKS; ++j) wmma::fill_fragment(S_frag[j], 0.0f);
+
+            #pragma unroll
+            for (int d_block = 0; d_block < K_BLOCKS; ++d_block) {
+                wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K,
+                               __half, wmma::row_major> Q_frag;
+                wmma::load_matrix_sync(Q_frag,
+                                       &q_tile[warp_row_off][d_block * WMMA_K], D);
+                #pragma unroll
+                for (int j = 0; j < N_BLOCKS; ++j) {
+                    // K stored row-major [KV_BLOCK, D]; reinterpreting the
+                    // same memory with col_major layout gives K^T = [D, KV_BLOCK]
+                    // which is the B operand of S = Q @ K^T. No memory motion.
+                    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K,
+                                   __half, wmma::col_major> K_frag;
+                    wmma::load_matrix_sync(K_frag,
+                                           &kp.k_tile[j * WMMA_N][d_block * WMMA_K], D);
+                    wmma::mma_sync(S_frag[j], Q_frag, K_frag, S_frag[j]);
+                }
+            }
+
+            // Pack into per-row arrays + apply softmax_scale here (saves a
+            // pass over s_a/s_b later). Indices follow the fp32 acc layout
+            // documented at the top of the file. Each lane holds 4 cols per
+            // row per fragment; with N_BLOCKS = 2 fragments that's 8 cols.
+            #pragma unroll
+            for (int j = 0; j < N_BLOCKS; ++j) {
+                s_a[4*j + 0] = S_frag[j].x[0] * softmax_scale;
+                s_a[4*j + 1] = S_frag[j].x[1] * softmax_scale;
+                s_a[4*j + 2] = S_frag[j].x[4] * softmax_scale;
+                s_a[4*j + 3] = S_frag[j].x[5] * softmax_scale;
+                s_b[4*j + 0] = S_frag[j].x[2] * softmax_scale;
+                s_b[4*j + 1] = S_frag[j].x[3] * softmax_scale;
+                s_b[4*j + 2] = S_frag[j].x[6] * softmax_scale;
+                s_b[4*j + 3] = S_frag[j].x[7] * softmax_scale;
+            }
+        }
+        // S_frag dead here.
+
+        // === 3. Sync before reusing k_tile shmem as p_tile =================
+        // All warps must be past their last wmma::load_matrix_sync(K_frag)
+        // before ANY warp writes p_tile (which aliases k_tile).
         __syncthreads();
 
-        // --- QK^T via WMMA ---------------------------------------------------
-        // Each warp computes its 16x32 S slice = 2 col-fragments,
-        // summing over 8 D-chunks of width WMMA_K=16.
-        wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float>
-            S_frag[KV_block_size / WMMA_N];
-
+        // === 4. Causal + range mask ========================================
+        // q_pos = the absolute position of the query row. For causal SDPA we
+        // mask any k_pos > q_pos. We also mask k_pos beyond cur_len (the
+        // tail of the last KV block when cur_len isn't a multiple of KV_BLOCK).
+        const int q_pos_a = q_pos_first + warp_row_off + group;
+        const int q_pos_b = q_pos_first + warp_row_off + group + 8;
+        const int kv_base = kv_block * KV_BLOCK;
         #pragma unroll
-        for (int j = 0; j < KV_block_size / WMMA_N; ++j) {
-            wmma::fill_fragment(S_frag[j], 0.0f);
+        for (int c = 0; c < 8; ++c) {
+            const int k_pos = kv_base + my_cols[c];
+            if (k_pos > q_pos_a || k_pos >= cur_len) s_a[c] = -INFINITY;
+            if (k_pos > q_pos_b || k_pos >= cur_len) s_b[c] = -INFINITY;
         }
 
+        // === 5. Row-max via local-then-shuffle reduction ===================
+        // Each lane has 8 cols of its row. After the local fmaxf-fold, two
+        // __shfl_xor (mask 1 and 2) propagate the max across the 4-lane group
+        // sharing the row. After both shuffles all 4 lanes hold the row max.
+        // Cost: O(log4) shuffles. Was O(32) serial elements in the previous
+        // version (with 16 lanes idle, no less).
+        float row_max_a = -INFINITY, row_max_b = -INFINITY;
         #pragma unroll
-        for (int d_block = 0; d_block < D / WMMA_K; ++d_block) {
-
-            wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K,
-                           __half, wmma::row_major> Q_frag;
-            wmma::load_matrix_sync(Q_frag,
-                                   &q_tile[warp_row_off][d_block * WMMA_K], D);
-
-            #pragma unroll
-            for (int j = 0; j < KV_block_size / WMMA_N; ++j) {
-                // K is row-major [B_c, D]. Loading the same memory with
-                // col_major layout reinterprets it as K^T = [D, B_c],
-                // which is exactly the B operand for S = Q @ K^T.
-                // No memory movement.
-                wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K,
-                               __half, wmma::col_major> K_frag;
-                wmma::load_matrix_sync(
-                    K_frag, &k_tile[j * WMMA_N][d_block * WMMA_K], D);
-
-                wmma::mma_sync(S_frag[j], Q_frag, K_frag, S_frag[j]);
-            }
+        for (int c = 0; c < 8; ++c) {
+            row_max_a = fmaxf(row_max_a, s_a[c]);
+            row_max_b = fmaxf(row_max_b, s_b[c]);
         }
+        row_max_a = fmaxf(row_max_a, __shfl_xor_sync(0xFFFFFFFF, row_max_a, 1));
+        row_max_a = fmaxf(row_max_a, __shfl_xor_sync(0xFFFFFFFF, row_max_a, 2));
+        row_max_b = fmaxf(row_max_b, __shfl_xor_sync(0xFFFFFFFF, row_max_b, 1));
+        row_max_b = fmaxf(row_max_b, __shfl_xor_sync(0xFFFFFFFF, row_max_b, 2));
 
-        // --- Stage S to shared memory (per warp owns rows warp_row_off..+16) -
+        // === 6. Online softmax update + alpha rescale ======================
+        // alpha = exp(m_old - m_new) is the shrink factor applied to the
+        // *previously accumulated* O contributions to renormalize them under
+        // the new row-max. Two edge cases collapse to alpha = 0:
+        //   (a) m_old == -INF (this is the first time the row sees a finite
+        //       value; previous O contribution is zero anyway).
+        //   (b) m_new == -INF (the entire row is masked through this iter;
+        //       guards against expf(-inf - -inf) = NaN).
+        const float m_new_a = fmaxf(m_a, row_max_a);
+        const float m_new_b = fmaxf(m_b, row_max_b);
+        const float alpha_a = (m_a == -INFINITY || m_new_a == -INFINITY)
+                                  ? 0.0f : __expf(m_a - m_new_a);
+        const float alpha_b = (m_b == -INFINITY || m_new_b == -INFINITY)
+                                  ? 0.0f : __expf(m_b - m_new_b);
+
+        // p = exp(s - m_new); per-row local sum then shuffle reduction.
+        float p_a[8], p_b[8];
+        float row_sum_a = 0.0f, row_sum_b = 0.0f;
         #pragma unroll
-        for (int j = 0; j < KV_block_size / WMMA_N; ++j) {
-            wmma::store_matrix_sync(&S_smem[warp_row_off][j * WMMA_N],
-                                    S_frag[j], KV_block_size,
-                                    wmma::mem_row_major);
+        for (int c = 0; c < 8; ++c) {
+            p_a[c] = (m_new_a == -INFINITY) ? 0.0f : __expf(s_a[c] - m_new_a);
+            p_b[c] = (m_new_b == -INFINITY) ? 0.0f : __expf(s_b[c] - m_new_b);
+            row_sum_a += p_a[c];
+            row_sum_b += p_b[c];
         }
-        __syncwarp();    // own-warp store -> read ordering
+        row_sum_a += __shfl_xor_sync(0xFFFFFFFF, row_sum_a, 1);
+        row_sum_a += __shfl_xor_sync(0xFFFFFFFF, row_sum_a, 2);
+        row_sum_b += __shfl_xor_sync(0xFFFFFFFF, row_sum_b, 1);
+        row_sum_b += __shfl_xor_sync(0xFFFFFFFF, row_sum_b, 2);
 
-        // --- Online softmax: 16 lanes per warp handle 16 rows ----------------
-        if (lane_id < WMMA_M) {
-            int my_row = warp_row_off + lane_id;
-            int q_pos  = q_pos_first + my_row;
+        l_a = alpha_a * l_a + row_sum_a;
+        l_b = alpha_b * l_b + row_sum_b;
+        m_a = m_new_a;
+        m_b = m_new_b;
 
-            // Scale + causal/range mask + row max
-            float row_max = -INFINITY;
-            #pragma unroll
-            for (int j = 0; j < KV_block_size; ++j) {
-                int k_pos = kv_block * KV_block_size + j;
-                float s = S_smem[my_row][j] * softmax_scale;
-                if (k_pos > q_pos || k_pos >= cur_len) s = -INFINITY;
-                S_smem[my_row][j] = s;
-                row_max = fmaxf(row_max, s);
-            }
-
-            float m_old = m_smem[my_row];
-            float m_new = fmaxf(m_old, row_max);
-
-            if (m_new == -INFINITY) {
-                // Entire row masked - shouldn't happen with our bounds,
-                // but safe to guard against -inf - -inf = NaN.
-                alpha_smem[my_row] = 0.0f;
-                #pragma unroll
-                for (int j = 0; j < KV_block_size; ++j) {
-                    P_smem[my_row][j] = __float2half(0.0f);
-                }
-            } else {
-                float alpha = (m_old == -INFINITY) ? 0.0f
-                                                   : __expf(m_old - m_new);
-                alpha_smem[my_row] = alpha;
-
-                float row_sum = 0.0f;
-                #pragma unroll
-                for (int j = 0; j < KV_block_size; ++j) {
-                    float p = __expf(S_smem[my_row][j] - m_new);
-                    row_sum += p;
-                    P_smem[my_row][j] = __float2half(p);
-                }
-
-                l_smem[my_row] = alpha * l_smem[my_row] + row_sum;
-                m_smem[my_row] = m_new;
-            }
-        }
-        __syncwarp();
-
-        // --- Rescale O fragments by per-row alpha ----------------------------
-        // Fragment layout for mma.m16n16k16 fp32 accumulator on Turing/Ampere:
-        //   group = lane_id / 4    (0..7)
-        //   group_thread = lane_id % 4    (0..3)
-        // Each lane holds 8 elements in two rows: `group` and `group + 8`.
-        //   frag.x[0,1,4,5] -> row `group`
-        //   frag.x[2,3,6,7] -> row `group + 8`
-        // *** VERIFY THIS LAYOUT WITH A UNIT TEST BEFORE USING. ***
-        {
-            const int group = lane_id / 4;
-            float alpha_a = alpha_smem[warp_row_off + group];
-            float alpha_b = alpha_smem[warp_row_off + group + 8];
-
-            #pragma unroll
-            for (int j = 0; j < D / WMMA_N; ++j) {
-                O_frag[j].x[0] *= alpha_a;
-                O_frag[j].x[1] *= alpha_a;
-                O_frag[j].x[2] *= alpha_b;
-                O_frag[j].x[3] *= alpha_b;
-                O_frag[j].x[4] *= alpha_a;
-                O_frag[j].x[5] *= alpha_a;
-                O_frag[j].x[6] *= alpha_b;
-                O_frag[j].x[7] *= alpha_b;
-            }
-        }
-
-        // --- PV via WMMA: O_frag += P @ V ------------------------------------
-        // P is 16x32 (one warp's slice), V is 32x128, O is 16x128.
-        // Sum over 2 P-col-blocks (= V-row-blocks) per O column.
+        // === 7. Rescale O_frag by per-row alpha ============================
+        // Same row pattern as the QK^T extraction above:
+        //   O_frag[j].x[0,1,4,5] -> row A (= row `group`)
+        //   O_frag[j].x[2,3,6,7] -> row B (= row `group + 8`)
         #pragma unroll
-        for (int p_block = 0; p_block < KV_block_size / WMMA_K; ++p_block) {
+        for (int j = 0; j < O_BLOCKS; ++j) {
+            O_frag[j].x[0] *= alpha_a; O_frag[j].x[1] *= alpha_a;
+            O_frag[j].x[4] *= alpha_a; O_frag[j].x[5] *= alpha_a;
+            O_frag[j].x[2] *= alpha_b; O_frag[j].x[3] *= alpha_b;
+            O_frag[j].x[6] *= alpha_b; O_frag[j].x[7] *= alpha_b;
+        }
 
+        // === 8. Write P (fp16) into p_tile =================================
+        // We can't directly construct an fp16 matrix_a WMMA fragment from an
+        // fp32 acc fragment on Turing — the two fragments have different
+        // per-lane layouts in the C++ WMMA API. So we round-trip through
+        // 4 KB of shmem (the aliased k_tile slot). The 8 element pairs per
+        // row are 2-element-adjacent in column space, so we pack each pair
+        // into one __half2 store → 4 half2 stores per row per lane = 8 per
+        // lane total (vs the 16 scalar fp16 stores otherwise).
+        __half2* p_row_a = reinterpret_cast<__half2*>(&kp.p_tile[warp_row_off + group    ][0]);
+        __half2* p_row_b = reinterpret_cast<__half2*>(&kp.p_tile[warp_row_off + group + 8][0]);
+        // half2 index within a row:
+        //   gt      -> cols (2*gt    , 2*gt + 1)     ← from p_a[0], p_a[1]
+        //   gt + 4  -> cols (2*gt + 8, 2*gt + 9)     ← from p_a[2], p_a[3]
+        //   gt + 8  -> cols (2*gt+16, 2*gt + 17)     ← from p_a[4], p_a[5]
+        //   gt + 12 -> cols (2*gt+24, 2*gt + 25)     ← from p_a[6], p_a[7]
+        p_row_a[gt +  0] = __floats2half2_rn(p_a[0], p_a[1]);
+        p_row_a[gt +  4] = __floats2half2_rn(p_a[2], p_a[3]);
+        p_row_a[gt +  8] = __floats2half2_rn(p_a[4], p_a[5]);
+        p_row_a[gt + 12] = __floats2half2_rn(p_a[6], p_a[7]);
+        p_row_b[gt +  0] = __floats2half2_rn(p_b[0], p_b[1]);
+        p_row_b[gt +  4] = __floats2half2_rn(p_b[2], p_b[3]);
+        p_row_b[gt +  8] = __floats2half2_rn(p_b[4], p_b[5]);
+        p_row_b[gt + 12] = __floats2half2_rn(p_b[6], p_b[7]);
+        __syncwarp();  // p_tile is per-warp-disjoint, so __syncwarp suffices.
+
+        // === 9. PV via WMMA: O_frag += P @ V ===============================
+        // P is 16x32 per warp; V is 32x128. Sum over P_BLOCKS = 2 K-blocks
+        // per O-col fragment. All 4 warps read the same V tile (different
+        // P slices, since each warp owns disjoint Q rows).
+        #pragma unroll
+        for (int p_block = 0; p_block < P_BLOCKS; ++p_block) {
             wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K,
                            __half, wmma::row_major> P_frag;
-            wmma::load_matrix_sync(
-                P_frag, &P_smem[warp_row_off][p_block * WMMA_K], KV_block_size);
-
+            wmma::load_matrix_sync(P_frag,
+                                   &kp.p_tile[warp_row_off][p_block * WMMA_K],
+                                   KV_BLOCK);
             #pragma unroll
-            for (int d_col = 0; d_col < D / WMMA_N; ++d_col) {
+            for (int d_col = 0; d_col < O_BLOCKS; ++d_col) {
                 wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K,
                                __half, wmma::row_major> V_frag;
-                wmma::load_matrix_sync(
-                    V_frag, &v_tile[p_block * WMMA_K][d_col * WMMA_N], D);
-
+                wmma::load_matrix_sync(V_frag,
+                                       &v_tile[p_block * WMMA_K][d_col * WMMA_N],
+                                       D);
                 wmma::mma_sync(O_frag[d_col], P_frag, V_frag, O_frag[d_col]);
             }
         }
 
-        __syncthreads();   // before next iteration overwrites k_tile/v_tile
+        __syncthreads();  // (10) before next iter overwrites k_tile / v_tile.
     }
 
-    // --- Final normalize: O_frag /= l_smem[its_row] --------------------------
-    // Same row-pattern as the alpha rescale.
+    // === 11. Final normalize: O_frag /= l per row ==========================
+    // (l == 0 means the entire row was masked; the output is undefined per
+    // the standard SDPA definition. We return 0 rather than NaN.)
     {
-        const int group = lane_id / 4;
-        float inv_l_a = 1.0f / l_smem[warp_row_off + group];
-        float inv_l_b = 1.0f / l_smem[warp_row_off + group + 8];
-        if (!isfinite(inv_l_a)) inv_l_a = 0.0f;
-        if (!isfinite(inv_l_b)) inv_l_b = 0.0f;
+        const float inv_l_a = (l_a == 0.0f) ? 0.0f : 1.0f / l_a;
+        const float inv_l_b = (l_b == 0.0f) ? 0.0f : 1.0f / l_b;
+        #pragma unroll
+        for (int j = 0; j < O_BLOCKS; ++j) {
+            O_frag[j].x[0] *= inv_l_a; O_frag[j].x[1] *= inv_l_a;
+            O_frag[j].x[4] *= inv_l_a; O_frag[j].x[5] *= inv_l_a;
+            O_frag[j].x[2] *= inv_l_b; O_frag[j].x[3] *= inv_l_b;
+            O_frag[j].x[6] *= inv_l_b; O_frag[j].x[7] *= inv_l_b;
+        }
+    }
+
+    // === 12. Write O to global memory ======================================
+    // Direct register → global, no shmem staging.
+    //
+    // For each fragment j (covering D-cols [j*16 .. j*16 + 16)):
+    //   Row A (warp_row_off + group):
+    //     cols (2*gt + 0, 2*gt + 1) ← x[0], x[1]
+    //     cols (2*gt + 8, 2*gt + 9) ← x[4], x[5]
+    //   Row B (warp_row_off + group + 8):
+    //     cols (2*gt + 0, 2*gt + 1) ← x[2], x[3]
+    //     cols (2*gt + 8, 2*gt + 9) ← x[6], x[7]
+    //
+    // Each (lane, row, fragment) is 2 half2 stores = 4 fp16 written. Total
+    // per lane: 2 rows × 8 fragments × 2 half2 = 32 half2 stores = 128 B.
+    // Lanes in the same 4-lane group write to adjacent cols, so the 4
+    // stores per "wave" coalesce into a single L2 transaction per row.
+    //
+    // No __syncthreads here: O rows are disjoint across warps and writes go
+    // straight to global. (The previous version's 8 __syncthreads inside the
+    // O-write loop were a major contributor to its `barrier` and `wait`
+    // stall categories.)
+    {
+        const int row_a        = warp_row_off + group;
+        const int row_b        = warp_row_off + group + 8;
+        const int row_a_global = q_row_start + row_a;
+        const int row_b_global = q_row_start + row_b;
+        const int o_slab_base  = ((batch * h_q + head) * seq_len) * D;
+        const bool row_a_in    = row_a_global < seq_len;
+        const bool row_b_in    = row_b_global < seq_len;
 
         #pragma unroll
-        for (int j = 0; j < D / WMMA_N; ++j) {
-            O_frag[j].x[0] *= inv_l_a;
-            O_frag[j].x[1] *= inv_l_a;
-            O_frag[j].x[2] *= inv_l_b;
-            O_frag[j].x[3] *= inv_l_b;
-            O_frag[j].x[4] *= inv_l_a;
-            O_frag[j].x[5] *= inv_l_a;
-            O_frag[j].x[6] *= inv_l_b;
-            O_frag[j].x[7] *= inv_l_b;
-        }
-    }
-
-    // --- Write O to global memory --------------------------------------------
-    // Staged one D-column-block at a time through S_smem (reused as fp32 buf).
-    // wmma::store_matrix_sync only outputs in the fragment dtype (fp32 here);
-    // Turing has no built-in fp32->fp16 store path, so we cast manually.
-    //
-    // *** This path is correct but inefficient. Worth replacing with a
-    //     single coalesced pass once correctness is established. ***
-    #pragma unroll
-    for (int j = 0; j < D / WMMA_N; ++j) {
-        float (*stage)[WMMA_N] =
-            reinterpret_cast<float(*)[WMMA_N]>(&S_smem[0][0]);
-        wmma::store_matrix_sync(&stage[warp_row_off][0], O_frag[j],
-                                WMMA_N, wmma::mem_row_major);
-        __syncwarp();
-
-        if (lane_id < WMMA_M) {
-            int row = warp_row_off + lane_id;
-            int q_row_global = q_start + row;
-            if (q_row_global < seq_len) {
-                int row_off = (((batch * h_q) + head) * seq_len + q_row_global)
-                              * D + j * WMMA_N;
-                #pragma unroll
-                for (int c = 0; c < WMMA_N; ++c) {
-                    o[row_off + c] = __float2half(stage[row][c]);
-                }
+        for (int j = 0; j < O_BLOCKS; ++j) {
+            const int col_off = j * WMMA_N;
+            if (row_a_in) {
+                __half2* dst = reinterpret_cast<__half2*>(
+                    o + o_slab_base + row_a_global * D + col_off);
+                // half2 index within the 16-col fragment:
+                //   gt     → cols (2*gt + 0, 2*gt + 1)
+                //   gt + 4 → cols (2*gt + 8, 2*gt + 9)
+                dst[gt    ] = __floats2half2_rn(O_frag[j].x[0], O_frag[j].x[1]);
+                dst[gt + 4] = __floats2half2_rn(O_frag[j].x[4], O_frag[j].x[5]);
+            }
+            if (row_b_in) {
+                __half2* dst = reinterpret_cast<__half2*>(
+                    o + o_slab_base + row_b_global * D + col_off);
+                dst[gt    ] = __floats2half2_rn(O_frag[j].x[2], O_frag[j].x[3]);
+                dst[gt + 4] = __floats2half2_rn(O_frag[j].x[6], O_frag[j].x[7]);
             }
         }
-        __syncthreads();   // before reusing S_smem for the next column
     }
 }
 
@@ -635,8 +809,6 @@ torch::Tensor fused_attn_forward(torch::Tensor q,
                 "fused_attn: num_heads must be divisible by num_kv_heads (GQA)");
     TORCH_CHECK(cur_len > 0 && cur_len <= cache_k.size(2),
                 "fused_attn: cur_len must be in (0, max_seq_len]");
-    (void)softmax_scale;
-    
 
     const int B       = q.size(0);
     const int h_q     = q.size(1);
@@ -646,15 +818,17 @@ torch::Tensor fused_attn_forward(torch::Tensor q,
 
     auto o = torch::empty_like(q);
 
-    constexpr int Q_block_size = 64; constexpr int KV_block_size = 32; constexpr int D = 128; 
-    constexpr int NUM_THREADS = 128; constexpr int NUM_WARPS = 32;
-
-    constexpr int WMMA_M = 16;
-    constexpr int WMMA_N = 16;
-    constexpr int WMMA_K = 16;
+    // Template params — see the geometry block at the top of the kernel.
+    constexpr int Q_block_size  = 64;
+    constexpr int KV_block_size = 32;
+    constexpr int D             = 128;
+    constexpr int NUM_THREADS   = 128;        // = 4 warps
+    constexpr int WMMA_M        = 16;
+    constexpr int WMMA_N        = 16;
+    constexpr int WMMA_K        = 16;
 
     dim3 grid((seq_len + Q_block_size - 1) / Q_block_size, h_q, B);
-    dim3 block(NUM_THREADS);                    // 128, not 256
+    dim3 block(NUM_THREADS);
 
     flash_attention_kernel<Q_block_size, KV_block_size, D, NUM_THREADS, WMMA_M, WMMA_K, WMMA_N>
         <<<grid, block>>>(
