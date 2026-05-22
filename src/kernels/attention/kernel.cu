@@ -429,18 +429,31 @@ __global__ void flash_attention_kernel(
     constexpr int O_BLOCKS      = D / WMMA_N;             // 8 (O col-fragments / warp)
     constexpr int P_BLOCKS      = KV_BLOCK / WMMA_K;      // 2 (PV K-partitions)
     constexpr int VECS_PER_ROW  = D / 8;                  // 16 (int4 per D-row of fp16)
+    // p_tile row stride is padded from 32 → 40 fp16 to break the shmem
+    // bank-conflict pattern on the half2 stores after softmax. With stride
+    // 32, the 8 row groups in a warp (group = lane/4, 0..7) repeat banks
+    // every two groups → 4-way conflict per store inst. With stride 40,
+    // (20*g) mod 32 = {0, 20, 8, 28, 16, 4, 24, 12} for g=0..7 — every group
+    // hits a distinct bank cluster, so the warp's 8 lanes-per-instruction
+    // pattern covers all 32 banks once with no overlap. The WMMA load of
+    // P_frag (matrix_a fp16) also benefits — ldmatrix needs ldm to be a
+    // multiple of 8 fp16, which 40 satisfies. Free in shmem: the k/p union
+    // is bounded by k_tile's 8 KB; p_tile grows 4 KB → 5 KB but still loses
+    // the max, so total static shmem stays at 32 KB and 2 blocks/SM holds.
+    constexpr int P_STRIDE      = KV_BLOCK + 8;           // 40
+    static_assert(P_STRIDE % 8 == 0, "P_STRIDE must be a multiple of 8 for WMMA ldm");
     static_assert(Q_BLOCK == NUM_WARPS * ROWS_PER_WARP,
                   "Q_BLOCK must equal NUM_WARPS * WMMA_M");
 
     // --- Shared memory (32 KB total — fits 2 blocks/SM on Turing) -----------
     __shared__ __half q_tile[Q_BLOCK][D];                 // 16 KB
     __shared__ __half v_tile[KV_BLOCK][D];                //  8 KB
-    
+
     // k_tile (only live during QK^T) and p_tile (written after softmax,
     // read by PV) alias in shmem. One __syncthreads between them is enough.
     union KPUnion {
         __half k_tile[KV_BLOCK][D];                       //  8 KB
-        __half p_tile[Q_BLOCK][KV_BLOCK];                 //  4 KB
+        __half p_tile[Q_BLOCK][P_STRIDE];                 //  5 KB (padded; see P_STRIDE)
     };
     __shared__ KPUnion kp;
 
@@ -705,7 +718,7 @@ __global__ void flash_attention_kernel(
                            __half, wmma::row_major> P_frag;
             wmma::load_matrix_sync(P_frag,
                                    &kp.p_tile[warp_row_off][p_block * WMMA_K],
-                                   KV_BLOCK);
+                                   P_STRIDE);
             #pragma unroll
             for (int d_col = 0; d_col < O_BLOCKS; ++d_col) {
                 wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K,
@@ -862,8 +875,36 @@ torch::Tensor o_proj_forward(torch::Tensor x, torch::Tensor W_o) {
     TORCH_CHECK(W_o.size(1) == x.size(1),
                 "o_proj: W_o inner dim must equal x hidden dim");
 
-    const int64_t M = x.size(0);
-    const int64_t H = W_o.size(0);
-    // TODO: cuBLAS GEMM (cublasGemmEx, CUDA_R_16F), no bias.
-    return torch::empty({M, H}, x.options());
+    const int64_t M = x.size(0);          // rows of X and Y (batch * seq_len)
+    const int64_t K = x.size(1);          // H_q (3584 for Qwen2.5-7B)
+    const int64_t N = W_o.size(0);        // H   (3584 for Qwen2.5-7B)
+
+    // No bias on o_proj (Qwen2 sets bias=False), so beta=0 and y is left
+    // uninitialized — the GEMM overwrites it.
+    auto y = at::empty({M, N}, x.options());
+
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+
+    const float alpha = 1.0f;
+    const float beta  = 0.0f;
+
+    CUBLAS_CHECK(cublasGemmEx(
+        handle,
+        CUBLAS_OP_T,                                    // op(A): transpose W_o (col-major view)
+        CUBLAS_OP_N,                                    // op(B): leave X as-is
+        static_cast<int>(N),                            // M and N are swapped since cuBLAS is column-major
+        static_cast<int>(M),
+        static_cast<int>(K),
+        &alpha,
+        W_o.data_ptr<at::Half>(), CUDA_R_16F,           // A pointer + dtype
+        static_cast<int>(K),                            // lda
+        x.data_ptr<at::Half>(),   CUDA_R_16F,           // B pointer + dtype
+        static_cast<int>(K),                            // ldb
+        &beta,
+        y.data_ptr<at::Half>(),   CUDA_R_16F,           // C pointer + dtype
+        static_cast<int>(N),                            // ldc
+        CUBLAS_COMPUTE_32F,                             // fp16 mul, fp32 accumulate
+        CUBLAS_GEMM_DEFAULT));                          // let cuBLAS pick the Tensor Core path
+
+    return y;
 }

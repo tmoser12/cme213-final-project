@@ -89,12 +89,17 @@ def profile_main(hidden_size=3584, batch_size=8, seq_len=128):
     torch.cuda.synchronize()
 
     print(f"Launching captured kernel at B={batch_size}, S={seq_len} inside NVTX range...")
+    # cudaProfilerStart/Stop scopes what nsys (--capture-range=cudaProfilerApi)
+    # and ncu (--profile-from-start off) record so warmup stays out of the
+    # capture.
     tag = f"rmsnorm/B{batch_size}_S{seq_len}"
+    torch.cuda.cudart().cudaProfilerStart()
+    torch.cuda.nvtx.range_push(tag)
     with torch.no_grad():
-        torch.cuda.nvtx.range_push(tag)
         custom_module(x)
-        torch.cuda.nvtx.range_pop()
+    torch.cuda.nvtx.range_pop()
     torch.cuda.synchronize()
+    torch.cuda.cudart().cudaProfilerStop()
     print("✅ Profile workload done.")
 
 

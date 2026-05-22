@@ -45,12 +45,16 @@ NUM_PROFILE = 5
 
 
 def make_inputs(B, S):
-    """Q for S new tokens + KV cache pre-filled to cur_len = S (pure prefill)."""
+    """Q for S new tokens + KV cache pre-filled to cur_len = S (pure prefill).
+
+    Cache is sized to max(MAX_SEQ, S) so configs with S > MAX_SEQ still fit.
+    """
+    cache_seq = max(MAX_SEQ, S)
     q = torch.randn(B, NUM_HEADS, S, HEAD_DIM,
                     dtype=torch.float16, device="cuda")
-    cache_k = torch.zeros(B, NUM_KV_HEADS, MAX_SEQ, HEAD_DIM,
+    cache_k = torch.zeros(B, NUM_KV_HEADS, cache_seq, HEAD_DIM,
                           dtype=torch.float16, device="cuda")
-    cache_v = torch.zeros(B, NUM_KV_HEADS, MAX_SEQ, HEAD_DIM,
+    cache_v = torch.zeros(B, NUM_KV_HEADS, cache_seq, HEAD_DIM,
                           dtype=torch.float16, device="cuda")
     cache_k[:, :, :S, :] = torch.randn(B, NUM_KV_HEADS, S, HEAD_DIM,
                                        dtype=torch.float16, device="cuda")

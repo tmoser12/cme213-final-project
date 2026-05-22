@@ -19,7 +19,7 @@ custom_ops = load_attention_ops()
 H, NH, D = 3584, 28, 128
 HQ = NH * D  # == H for Qwen2 (square o_proj)
 
-CONFIGS = [(1, 1), (1, 128), (2, 128), (8, 128), (8, 512), (16, 1024)]
+CONFIGS = [(1, 1), (1, 128), (1, 256), (1, 512), (1, 2048), (1, 16384)]
 
 
 class EagerOProj(nn.Module):

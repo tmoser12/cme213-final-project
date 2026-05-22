@@ -23,10 +23,10 @@ custom_ops = load_attention_ops()
 # Qwen2.5-7B
 NH, NKV, D = 28, 4, 128
 GROUPS = NH // NKV
-MAX_SEQ = 2048
+MAX_SEQ = 32768
 SCALE = 1.0 / math.sqrt(D)
 
-CONFIGS = [(1, 1), (1, 128), (2, 128), (8, 128), (8, 512), (1, 2048)]
+CONFIGS = [(1, 1), (1, 128), (1, 256), (1, 512), (1, 2048), (1, 16384)]
 
 
 def make_inputs(batch_size, seq_len):
@@ -34,10 +34,13 @@ def make_inputs(batch_size, seq_len):
 
     For the scaffold we set write_pos=0 so cur_len = seq_len, meaning the
     custom kernel attends to exactly the new tokens (pure-prefill regime).
+    The cache is sized to max(MAX_SEQ, seq_len) so configs with seq_len >
+    MAX_SEQ still fit.
     """
+    cache_seq = max(MAX_SEQ, seq_len)
     q = torch.randn(batch_size, NH, seq_len, D, dtype=torch.float16, device="cuda")
-    cache_k = torch.zeros(batch_size, NKV, MAX_SEQ, D, dtype=torch.float16, device="cuda")
-    cache_v = torch.zeros(batch_size, NKV, MAX_SEQ, D, dtype=torch.float16, device="cuda")
+    cache_k = torch.zeros(batch_size, NKV, cache_seq, D, dtype=torch.float16, device="cuda")
+    cache_v = torch.zeros(batch_size, NKV, cache_seq, D, dtype=torch.float16, device="cuda")
     # Put random K/V into the live prefix [0:seq_len].
     cache_k[:, :, :seq_len, :] = torch.randn(batch_size, NKV, seq_len, D,
                                              dtype=torch.float16, device="cuda")

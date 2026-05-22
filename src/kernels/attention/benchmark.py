@@ -18,10 +18,10 @@ from src.kernels.attention.wrapper import CustomQwen2Attention
 CONFIGS = [
     (1, 1),       # Auto-regressive decode
     (1, 128),     # Short prompt
-    (2, 128),     # Batched short prompt
-    (8, 128),
-    (8, 512),     # Medium prompt
-    (16, 1024),   # Long batched prompt
+    (1, 256),     # Batched short prompt
+    (1, 512),
+    (1, 2048),     # Medium prompt
+    (1, 8192),   # Long batched prompt
 ]
 
 
@@ -93,12 +93,17 @@ def profile_main(batch_size=8, seq_len=128):
             custom_module(x, position_embeddings=pos_emb, attention_mask=mask)
     torch.cuda.synchronize()
 
+    # cudaProfilerStart/Stop scopes what nsys (--capture-range=cudaProfilerApi)
+    # records so warmup stays out of the capture. Mirrors
+    # benchmark_scripts/profile_flash_attn.py.
     tag = f"attention/B{batch_size}_S{seq_len}"
+    torch.cuda.cudart().cudaProfilerStart()
+    torch.cuda.nvtx.range_push(tag)
     with torch.no_grad():
-        torch.cuda.nvtx.range_push(tag)
         custom_module(x, position_embeddings=pos_emb, attention_mask=mask)
-        torch.cuda.nvtx.range_pop()
+    torch.cuda.nvtx.range_pop()
     torch.cuda.synchronize()
+    torch.cuda.cudart().cudaProfilerStop()
 
 
 def main():
