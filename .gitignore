@@ -1,12 +1,18 @@
 results/*
 logs/*
-models/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.env
-.venv/
+models/*
+
+# user specific
+setup.sh
+
+# Ai stuff
+CLAUDE.md
+.claude/*
+
+# mac stuff
+src/.DS_Store
+.DS_Store
+
+# pycaches 
+*__pycache__/
+*__pycache__/*
