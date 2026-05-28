@@ -13,7 +13,7 @@
 #   benchmark_rope          benchmark_kv_write     benchmark_fused_attn
 #
 # Profile outputs (timestamped, never overwrite):
-#   <project_root>/results/profiles/attention_<TARGET>_<stamp>.{nsys-rep,ncu-rep}
+#   /results/profiles/attention_<TARGET>_<stamp>.{nsys-rep,ncu-rep}
 #
 # nsys is only produced for the umbrella benchmark; sub-ops get ncu only.
 # scp the .rep files back to a workstation and open them in the Nsight GUIs.
@@ -69,8 +69,6 @@ mkdir -p "$OUT_DIR"
 STAMP=$(date +%Y%m%d_%H%M%S)
 OUT_BASE="$OUT_DIR/${KERNEL_DIR}_${TARGET}_${STAMP}"
 
-# Per-target ncu kernel filter. Empty means "skip ncu" — qkv_proj/o_proj are
-# pure cuBLAS calls with no custom __global__ to profile.
 case "$TARGET" in
     benchmark)            KERNEL_REGEX="rope_kernel|kv_write_kernel|flash_attention_kernel" ;;
     benchmark_rope)       KERNEL_REGEX="rope_kernel" ;;
@@ -80,9 +78,6 @@ case "$TARGET" in
     *)                    KERNEL_REGEX=".*" ;;
 esac
 
-# nsys is only meaningful for the umbrella benchmark (multi-kernel timeline).
-# benchmark.py:profile_main brackets the captured forward with
-# cudaProfilerStart/Stop, so warmup stays out of the timeline.
 if [ "$TARGET" = "benchmark" ]; then
     echo ""
     echo "[nsys] Capturing full timeline..."
@@ -104,10 +99,6 @@ if [ -z "$KERNEL_REGEX" ]; then
     echo ""
     echo "[ncu] Skipped: '$TARGET' has no custom __global__ kernel (cuBLAS only)."
 else
-    # Umbrella uses cudaProfilerStart/Stop → ncu honors it via
-    # --profile-from-start off, then captures all 3 custom kernels in the
-    # bracketed forward (rope, kv_write, flash_attn). Sub-ops have no
-    # bracket; they do 5 warmup + 1 NVTX-tagged launch, so skip-5-take-1.
     if [ "$TARGET" = "benchmark" ]; then
         NCU_SCOPE=(--profile-from-start off --launch-count 3)
     else
