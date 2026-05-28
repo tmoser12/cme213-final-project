@@ -3,10 +3,10 @@
 # Usage: source setup.sh
 
 # Initialize Conda hook if conda command is not already available
-CONDA_PATH="/opt/ohpc/pub/compiler/anaconda3/2023.09-0"
-if ! command -v conda &> /dev/null; then
-    eval "$($CONDA_PATH/bin/conda shell.bash hook)"
-fi
+# CONDA_PATH="/opt/ohpc/pub/compiler/anaconda3/2023.09-0"
+# if ! command -v conda &> /dev/null; then
+#     eval "$($CONDA_PATH/bin/conda shell.bash hook)"
+# fi
 
 # Activate the project environment
 conda activate cme213
