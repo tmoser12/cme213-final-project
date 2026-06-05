@@ -1,120 +1,116 @@
 # Speculative Decoding — CME 213 Final Project
 Tobias Moser · Eli Wandless
 
-## Day 1 commands (login node)
+Custom CUDA kernels for **vanilla speculative decoding** with Qwen2.5-7B-Instruct (target)
++ Qwen2.5-0.5B-Instruct (draft), FP16, on Stanford ICME's Quadro RTX 6000 (SM 7.5, Turing).
+
+The eventual headline kernel is a fused speculative verify-and-sample (Leviathan et al.
+Algorithm 1). The current focus is building the per-op CUDA kernels for the Qwen2 forward
+pass and integrating them into a native C++/CUDA host-side runtime. **`tmp.md` is the
+authoritative plan** (Qwen2 Native Forward-Pass Execution Plan); read it before changing the
+architecture, model pair, or runtime layout.
+
+## Kernel status
+
+Each kernel lives under `src/kernels/<name>/` and is developed/validated in isolation by
+monkey-patching it into the HuggingFace model (see `skills/kernel_monkey_patching_plan.md`).
+
+| Kernel | Status | Notes |
+|---|---|---|
+| `embedding` | ✅ implemented | pure indexed-gather, bit-exact vs `F.embedding` |
+| `rmsnorm`   | ✅ implemented | float4/half2 vectorized, block reduction |
+| `attention` | ✅ implemented | qkv_proj · rope · kv_write · fused_attn · o_proj; **prefill-optimized** |
+| `swiglu`    | 🚧 scaffold | wiring + compilable stub launcher; `swiglu_act_forward` body TODO |
+
+**Roadmap (not yet built):**
+- **SwiGLU** kernel body — the `silu(gate) * up` elementwise fusion (scaffold is in place).
+- **Residual-add** kernel — the two `+ residual` writes per decoder layer.
+- **Decode-optimized attention** — a variant for token-by-token decode (S=1, growing KV cache);
+  the current kernel targets prefill.
+- **0.5B draft-model kernel suite** — current launch configs bake in 7B dims; the 0.5B draft has
+  different dims and needs separately-tuned kernels.
+- **Native C++/CUDA runtime** — host-side weight manager, memory/KV-cache planner, and decoder
+  executor that stitch the kernels into an end-to-end forward pass (milestones M1–M5 in `tmp.md`).
+- **Speculative decoding + MPI multi-GPU** — the end goal layered on top of the runtime.
+
+## Environment setup
+
+Every fresh shell on the cluster (see `skills/system.md` for the full build-issue field notes):
 
 ```bash
-# 1. Clone / init repo, then from project root:
-bash setup.sh                         # pip install into conda env cme213
+module load gnu12/12.3.0          # cuda/12.2 + course nvhpc module are loaded by default
+conda activate cme213             # python 3.11, torch 2.4.0, transformers 4.45.0
+```
 
-# 2. Download model weights (~15 GB total, ~10-20 min depending on network)
+Sanity-check toolchain resolution:
+```bash
+which nvcc        # expect /opt/ohpc/.../cuda/12.2/bin/nvcc  (NOT under nvidia-hpc-sdk)
+which g++         # expect /opt/ohpc/.../gnu12/.../bin/g++   (12.3.0)
+```
+
+One-time model download (~15 GB, ~10–20 min) and a load sanity check:
+```bash
 bash scripts/download_models.sh
-
-# 3. Verify both models load and produce output on a GPU node
 srun --partition=gpu-turing --gres=gpu:1 --pty \
      bash -c "source activate cme213 && python scripts/verify_env.py"
 ```
+Both models must report `Vocab size: 152064` — confirms the shared tokenizer that vanilla
+speculative decoding requires.
 
-Expected verify_env.py output:
-```
-=== CUDA ===
-  PyTorch version : 2.x.x
-  CUDA version    : 12.x
-  Device          : Quadro RTX 6000
-  Compute cap     : SM 7.5
-  VRAM            : 24.0 GB
+## Developing / benchmarking a kernel
 
-=== Loading Qwen/Qwen2.5-7B-Instruct ===
-  Load time   : ~30s
-  Weight mem  : ~14.xx GB
-  Vocab size  : 152064
-  Sample output: ' Paris'
-
-=== Loading Qwen/Qwen2.5-0.5B-Instruct ===
-  Load time   : ~5s
-  Weight mem  : ~0.9x GB
-  Vocab size  : 152064
-  Sample output: ' Paris'
-
-All checks passed.
-```
-
-Both models must show `Vocab size: 152064` — this confirms the shared tokenizer
-required for vanilla speculative decoding.
-
-## Day 2 commands
+Always run CUDA on a GPU node — the login node sees no devices. Each kernel dir has a
+`run_benchmark.sh` that clears the JIT cache and `srun`s the benchmark (which checks correctness
+against the HF reference, then times custom vs eager vs `torch.compile`):
 
 ```bash
-# Submit baseline benchmark job
-mkdir -p logs results
-sbatch slurm/baseline.slurm
+bash slurm/interactive.sh                            # interactive 1-GPU shell (optional)
 
-# Monitor job
-squeue -u $USER
-tail -f logs/baseline_<JOBID>.out
-
-# Or run interactively (faster feedback during development)
-bash slurm/interactive.sh
-# Then inside the GPU shell:
-source activate cme213
-python benchmarks/run_baseline.py --model 7b --trials 3   # quick check
-python benchmarks/run_baseline.py --model both            # full run
-
-# Save results
-python benchmarks/run_baseline.py --model both > results/baseline_$(date +%Y%m%d).txt
+bash src/kernels/rmsnorm/run_benchmark.sh            # correctness + micro-benchmark
+bash src/kernels/attention/run_benchmark.sh
+bash src/kernels/swiglu/run_benchmark.sh             # prints "scaffold-only" until kernel.cu is filled in
+bash src/kernels/rmsnorm/run_benchmark.sh --profile  # + nsys timeline + ncu metrics
 ```
+
+To add a new kernel, copy `src/kernels/rmsnorm/` (single custom op) or `src/kernels/attention/`
+(cuBLAS GEMMs + multiple custom sub-ops). `skills/kernel_development_workflow.md` is the
+step-by-step SOP.
 
 ## Repo structure
 
 ```
-spec-decoding/
+cme213-final-project/
+├── CLAUDE.md                          # local agent guidance (gitignored)
 ├── README.md
+├── tmp.md                             # authoritative plan: native forward-pass runtime
+├── setup.sh                           # env setup, sourced by run_benchmark.sh (gitignored)
 ├── requirements.txt
-├── setup.sh                          # one-time env setup (login node)
-├── .gitignore
-│
-├── scripts/
-│   ├── download_models.sh            # Day 1: download Qwen2.5 weights
-│   └── verify_env.py                 # Day 1: sanity check CUDA + both models
 │
 ├── src/
-│   ├── models/
-│   │   └── loader.py                 # load_model(model_id, device) -> ModelBundle
-│   ├── inference/
-│   │   └── autoregressive.py         # greedy_decode() with KV cache + per-step timing
-│   └── utils/
-│       └── benchmarking.py           # run_trials(), summarise(), print_stats()
+│   ├── kernels/                       # one dir per custom kernel
+│   │   ├── embedding/                 # ✅ kernel.cu bindings.cpp jit.py wrapper.py benchmark.py
+│   │   ├── rmsnorm/                   # ✅ + run_benchmark.sh + kernel_walkthrough.md
+│   │   ├── attention/                 # ✅ + benchmark_scripts/ (per-sub-op) + attention.md
+│   │   └── swiglu/                    # 🚧 scaffold
+│   └── models/
+│       ├── modeling_qwen2.py          # verbatim HF reference (NOT imported; kernel patch-target map)
+│       └── loading.py                 # model/weight loading helpers
 │
-├── benchmarks/
-│   ├── run_baseline.py               # Day 2: measure tokens/sec for both models
-│   └── prompts/
-│       └── mt_bench_subset.jsonl     # 5 prompts across writing/reasoning/code/math/knowledge
+├── scripts/
+│   ├── download_models.sh             # download Qwen2.5 weights
+│   └── verify_env.py                  # sanity check CUDA + both models load
+│
+├── skills/
+│   ├── system.md                      # cluster build-issue field notes (read first)
+│   ├── gpu_spec.md                    # RTX 6000 / SM 7.5 hardware notes
+│   ├── kernel_development_workflow.md # step-by-step SOP for a new kernel
+│   └── kernel_monkey_patching_plan.md # how kernels splice into the HF model
 │
 ├── slurm/
-│   ├── baseline.slurm                # sbatch script for Day 2 benchmark
-│   └── interactive.sh                # convenience wrapper for srun --pty bash
+│   └── interactive.sh                 # srun --pty bash wrapper (arg = #GPUs)
 │
-└── results/                          # gitignored; save baseline_YYYYMMDD.txt here
-    logs/                             # gitignored; SLURM stdout/stderr
+├── benchmarks/prompts/                # prompt sets for end-to-end benchmarking
+├── models/                            # downloaded weights (gitignored)
+├── results/                           # profiles + reports (gitignored)
+└── logs/                              # SLURM stdout/stderr (gitignored)
 ```
-
-## What to add in subsequent days
-
-Week 1 remainder:
-- `src/inference/speculative.py` — single-process SpecDec loop (both models on GPU 0)
-- `benchmarks/run_speculative.py` — gamma sweep + alpha measurement
-
-Week 2:
-- `src/mpi/worker_draft.py` — rank 0 process (draft model loop + MPI send/recv)
-- `src/mpi/worker_target.py` — rank 1 process (target verify loop + MPI send/recv)
-- `benchmarks/run_mpi_baseline.py` — two-process blocking MPI benchmark
-- `slurm/mpi_baseline.slurm` — ntasks=2, gres=gpu:2
-
-Week 3:
-- `kernels/verify_and_sample.cu` — fused accept/reject CUDA kernel
-- `kernels/verify_and_sample_naive.cu` — multi-launch baseline for comparison
-- `kernels/setup.py` — PyTorch C++ extension build script
-
-Week 4:
-- `benchmarks/run_ablation.py` — full ablation table (4 configurations)
-- `analysis/roofline.py` — roofline plot generation

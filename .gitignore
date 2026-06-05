@@ -1,6 +1,7 @@
 results/*
 logs/*
 models/*
+tmp.md
 
 # user specific
 setup.sh
