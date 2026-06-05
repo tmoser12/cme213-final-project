@@ -1,0 +1,29 @@
+---
+description: Enforce passive daily progress logging to project_logs/ after substantive work
+alwaysApply: true
+---
+
+# Progress Logging (always on)
+
+After any substantive work in this project, **read and follow** `.cursor/skills/progress-logging/SKILL.md` and append to today's log. Do this passively — never wait for the user to ask.
+
+## Required behavior
+
+1. Log file: `project_logs/YYYY-MM-DD.md` (create the folder/file if missing)
+2. **Append** a timestamped entry at the bottom after:
+   - Completing a user request that involved real work
+   - Making file changes
+   - Running meaningful commands (builds, benchmarks, SLURM jobs)
+   - Debugging or switching to new work areas
+3. Keep entries concise (3–6 bullets): what changed, key files, outcome, **In progress** if ongoing
+4. Do **not** announce the log update to the user unless they ask about logging
+
+## Skip logging when
+
+- Pure Q&A with no project changes
+- Trivial acknowledgments
+- Read-only exploration with no substantive findings
+
+## End-of-turn check
+
+Before finishing a turn where substantive work occurred: did you append to today's `project_logs/` file? If not, do it now.
