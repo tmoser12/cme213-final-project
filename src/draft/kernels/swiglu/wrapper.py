@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-from src.kernels.swiglu.jit import load_swiglu_ops
+from src.draft.kernels.swiglu.jit import load_swiglu_ops
 
 custom_ops = load_swiglu_ops()
 

@@ -16,12 +16,13 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2Rotary
 from src.target.kernels.attention.wrapper import CustomQwen2Attention
 
 CONFIGS = [
-    (1, 1),       # Auto-regressive decode
-    (1, 128),     # Short prompt
-    (1, 256),     # Batched short prompt
-    (1, 512),
-    (1, 2048),     # Medium prompt
-    (1, 8192),   # Long batched prompt
+    (1, 1),      # Auto-regressive decoding phase
+    (1, 128),    # Short prompt
+    (2, 128),    # Batched short prompt
+    (8, 128),
+    (8, 512),    # Medium prompt
+    (16, 1024),  # Long batched prompt
+    (1, 1024),
 ]
 
 
@@ -146,7 +147,9 @@ def main():
     for r in results:
         report += f"{r['batch_size']:<8}| {r['seq_len']:<6}| {r['hf_eager_us']:<12.2f}| {r['hf_compiled_us']:<15.2f}| {r['custom_us']:<12.2f}| {r['speedup_vs_eager']:<14.2f}x| {r['speedup_vs_compiled']:<14.2f}x\n"
 
-    report_path = Path(__file__).resolve().parent / "benchmark_report.txt"
+    from src.profiling import report_file
+
+    report_path = report_file(__file__, "attention")
     with open(report_path, "w") as f:
         f.write(report)
     print(f"\n✅ Benchmark complete! Report saved to: {report_path}")

@@ -19,7 +19,15 @@ custom_ops = load_attention_ops()
 H, NH, D = 3584, 28, 128
 HQ = NH * D  # == H for Qwen2 (square o_proj)
 
-CONFIGS = [(1, 1), (1, 128), (1, 256), (1, 512), (1, 2048), (1, 16384)]
+CONFIGS = [
+    (1, 1),      # Auto-regressive decoding phase
+    (1, 128),    # Short prompt
+    (2, 128),    # Batched short prompt
+    (8, 128),
+    (8, 512),    # Medium prompt
+    (16, 1024),  # Long batched prompt
+    (1, 1024),
+]
 
 
 class EagerOProj(nn.Module):
@@ -117,7 +125,9 @@ def main():
                    f"{r['eager_us']:<12.2f}| {r['compiled_us']:<15.2f}| {r['custom_us']:<12.2f}| "
                    f"{r['speedup_vs_eager']:<14.2f}x| {r['speedup_vs_compiled']:<14.2f}x\n")
 
-    report_path = Path(__file__).resolve().parent / "benchmark_o_proj_report.txt"
+    from src.profiling import report_file
+
+    report_path = report_file(__file__, "o_proj")
     with open(report_path, "w") as f:
         f.write(report)
     print(f"\n✅ Report: {report_path}\n\n{report}")

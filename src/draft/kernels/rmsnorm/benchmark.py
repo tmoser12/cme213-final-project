@@ -2,7 +2,7 @@ import argparse
 import torch
 from pathlib import Path
 from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm
-from src.kernels.rmsnorm.wrapper import CustomQwenRMSNorm
+from src.draft.kernels.rmsnorm.wrapper import CustomQwenRMSNorm
 
 # Shape sweep used by both timing benchmarks and the ncu profile path.
 CONFIGS = [
@@ -12,6 +12,7 @@ CONFIGS = [
     (8, 128),
     (8, 512),    # Medium prompt
     (16, 1024),  # Long batched prompt
+    (1, 1024),
 ]
 
 def run_benchmark_for_config(batch_size, seq_len, hidden_size, hf_baseline, hf_compiled, custom_module):
@@ -65,7 +66,7 @@ def run_benchmark_for_config(batch_size, seq_len, hidden_size, hf_baseline, hf_c
     
     return hf_time, comp_time, custom_time
 
-def profile_main(hidden_size=3584, batch_size=8, seq_len=128):
+def profile_main(hidden_size=896, batch_size=8, seq_len=128):
     """Minimal kernel-only path designed to be wrapped by Nsight Compute (ncu).
 
     Skips the HF eager/compiled paths and the 5000-iter timing loops — ncu
@@ -105,7 +106,7 @@ def profile_main(hidden_size=3584, batch_size=8, seq_len=128):
 
 def main():
     print("Initializing models and triggering JIT compilations...")
-    hidden_size = 3584
+    hidden_size = 896  # Qwen2.5-0.5B
 
     hf_baseline = Qwen2RMSNorm(hidden_size=hidden_size, eps=1e-6).cuda().half()
     hf_compiled = torch.compile(hf_baseline)
@@ -138,7 +139,9 @@ def main():
     for r in results:
         report += f"{r['batch_size']:<12} | {r['seq_len']:<10} | {r['hf_eager_us']:<12.2f} | {r['hf_compiled_us']:<15.2f} | {r['custom_us']:<12.2f} | {r['speedup_vs_eager']:<14.2f}x | {r['speedup_vs_compiled']:<14.2f}x\n"
         
-    report_path = Path(__file__).resolve().parent / "benchmark_report.txt"
+    from src.profiling import report_file
+        
+    report_path = report_file(__file__, "rmsnorm")
     with open(report_path, "w") as f:
         f.write(report)
         

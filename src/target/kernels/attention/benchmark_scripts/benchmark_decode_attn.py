@@ -29,7 +29,7 @@ import torch
 import torch.nn.functional as F
 from pathlib import Path
 
-from transformers.models.qwen2.modeling_qwen2 import repeat_kv
+from transformers.models.qwen2.modeling_qwen2 import repeat_kv, apply_rotary_pos_emb
 from src.target.kernels.attention.jit import load_attention_ops
 
 custom_ops = load_attention_ops()
@@ -83,11 +83,12 @@ def eager_attn(q, cache_k, cache_v, cur_len, attn_mask):
     return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, scale=SCALE)
 
 
-def custom_attn(q, cache_k, cache_v, cur_len):
-    """Dispatch on S: S==1 -> decode, S>1 -> small-q verify."""
+def custom_attn(q, cache_k, cache_v, cur_len, cos=None, sin=None):
+    """Dispatch on S: S==1 -> decode, S>1 -> small-q verify. cos/sin (optional)
+    enable the fused rope-on-Q path; None leaves Q un-rotated."""
     if q.shape[2] == 1:
-        return custom_ops.decode_attn_forward(q, cache_k, cache_v, cur_len, SCALE)
-    return custom_ops.small_q_attn_forward(q, cache_k, cache_v, cur_len, SCALE)
+        return custom_ops.decode_attn_forward(q, cache_k, cache_v, cur_len, SCALE, cos, sin)
+    return custom_ops.small_q_attn_forward(q, cache_k, cache_v, cur_len, SCALE, cos, sin)
 
 
 def _time(fn, num_runs):
@@ -112,6 +113,23 @@ def run_benchmark_for_config(batch_size, seq_len, history, compiled_attn):
             f"decode vs HF mismatch at B={batch_size}, S={seq_len}, hist={history}"
         assert torch.allclose(prefill, out, atol=1e-2, rtol=1e-2), \
             f"decode vs prefill-kernel mismatch at B={batch_size}, S={seq_len}, hist={history}"
+
+        # Fused rope-on-Q path, cross-checked against BOTH oracles (HF explicit
+        # mask + the prefill kernel), mirroring the no-rope checks above. cos/sin
+        # are [B, S, D] (upper D/2 duplicates lower D/2), one row per query token;
+        # the same cos is applied to the same local rows in oracle and kernel.
+        cos_half = torch.randn(batch_size, seq_len, D // 2, dtype=torch.float16, device=q.device)
+        sin_half = torch.randn(batch_size, seq_len, D // 2, dtype=torch.float16, device=q.device)
+        cos = torch.cat([cos_half, cos_half], dim=-1)
+        sin = torch.cat([sin_half, sin_half], dim=-1)
+        q_rot, _    = apply_rotary_pos_emb(q, q, cos, sin)
+        ref_rope     = eager_attn(q_rot, cache_k, cache_v, cur_len, mask)
+        prefill_rope = custom_ops.fused_attn_forward(q, cache_k, cache_v, cur_len, SCALE, cos, sin)
+        out_rope     = custom_attn(q, cache_k, cache_v, cur_len, cos, sin)
+        assert torch.allclose(ref_rope, out_rope, atol=1e-2, rtol=1e-2), \
+            f"decode rope-Q vs HF mismatch at B={batch_size}, S={seq_len}, hist={history}"
+        assert torch.allclose(prefill_rope, out_rope, atol=1e-2, rtol=1e-2), \
+            f"decode rope-Q vs prefill-kernel mismatch at B={batch_size}, S={seq_len}, hist={history}"
 
     with torch.no_grad():
         for _ in range(20):
@@ -165,7 +183,9 @@ def main():
                    f"{r['eager_us']:<12.2f}| {r['compiled_us']:<15.2f}| {r['custom_us']:<12.2f}| "
                    f"{r['speedup_vs_eager']:<14.2f}x| {r['speedup_vs_compiled']:<14.2f}x\n")
 
-    report_path = Path(__file__).resolve().parent / "benchmark_decode_attn_report.txt"
+    from src.profiling import report_file
+
+    report_path = report_file(__file__, "decode_attn")
     with open(report_path, "w") as f:
         f.write(report)
     print(f"\n✅ All configs passed correctness. Report: {report_path}\n\n{report}")

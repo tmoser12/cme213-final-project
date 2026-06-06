@@ -12,6 +12,7 @@ CONFIGS = [
     (8, 128),
     (8, 512),    # Medium prompt
     (16, 1024),  # Long batched prompt
+    (1, 1024),
 ]
 
 def run_benchmark_for_config(batch_size, seq_len, hidden_size, hf_baseline, hf_compiled, custom_module):
@@ -138,7 +139,9 @@ def main():
     for r in results:
         report += f"{r['batch_size']:<12} | {r['seq_len']:<10} | {r['hf_eager_us']:<12.2f} | {r['hf_compiled_us']:<15.2f} | {r['custom_us']:<12.2f} | {r['speedup_vs_eager']:<14.2f}x | {r['speedup_vs_compiled']:<14.2f}x\n"
         
-    report_path = Path(__file__).resolve().parent / "benchmark_report.txt"
+    from src.profiling import report_file
+        
+    report_path = report_file(__file__, "rmsnorm")
     with open(report_path, "w") as f:
         f.write(report)
         

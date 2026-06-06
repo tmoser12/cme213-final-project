@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 
-from src.kernels.attention.jit import load_attention_ops
+from src.draft.kernels.attention.jit import load_attention_ops
 
 custom_ops = load_attention_ops()
 
@@ -63,29 +63,34 @@ class CustomQwen2Attention(nn.Module):
         k = qkv[:, H_q:H_q + H_kv].reshape(B, S, self.num_kv_heads, self.head_dim).transpose(1, 2).contiguous()
         v = qkv[:, H_q + H_kv:].reshape(B, S, self.num_kv_heads, self.head_dim).transpose(1, 2).contiguous()
 
-        # 3) In-place RoPE on Q and K. cos/sin arrive as (B, S, D); our
-        #    rope_kernel indexes them as (B, S, D) directly (HF unsqueezes
-        #    to (B, 1, S, D) for broadcast, we don't need to).
+        # 3) RoPE is now FUSED into the two ops below, so there is no separate
+        #    rope_forward launch: rope-on-K happens inside rope_kv_write_forward
+        #    (step 4) and rope-on-Q happens inside fused_attn_forward (step 5).
+        #    K never leaves global memory rotated; Q is rotated in shared memory
+        #    on its way into the attention kernel. cos/sin arrive as (B, S, D)
+        #    and are indexed by local row, matching both fused kernels.
         cos, sin = position_embeddings
-        custom_ops.rope_forward(q, k, cos, sin)
 
-        # 4) KV cache. This scaffold path is for the standalone attention
-        #    benchmark — a single attention call with no rolling cache, so
-        #    we allocate a transient cache of size S and write_pos = 0.
-        #    Speculative-decode integration will pass in the persistent
-        #    paged cache + a non-zero write_pos (see
+        # 4) KV cache + fused rope-on-K write. This scaffold path is for the
+        #    standalone attention benchmark — a single attention call with no
+        #    rolling cache, so we allocate a transient cache of size S and
+        #    write_pos = 0. Speculative-decode integration will pass in the
+        #    persistent paged cache + a non-zero write_pos (see
         #    spec_decoding_project_plan.md and kernel_monkey_patching_plan.md).
+        #    k is passed UN-rotated; rope_kv_write_forward rotates it into the
+        #    cache. v is copied verbatim.
         if past_key_value is not None:
             raise NotImplementedError(
                 "CustomQwen2Attention: persistent KV cache path not wired up yet")
         cache_k = torch.empty_like(k)
         cache_v = torch.empty_like(v)
-        custom_ops.kv_write_forward(k, v, cache_k, cache_v, 0)
+        custom_ops.rope_kv_write_forward(k, v, cache_k, cache_v, 0, cos, sin)
 
-        # 5) Fused causal SDPA, GQA-aware. cur_len = S since this scaffold
-        #    is prefill-only (no history).
+        # 5) Fused causal SDPA, GQA-aware, with fused rope-on-Q (q passed
+        #    UN-rotated; the kernel rotates it on load). cur_len = S since this
+        #    scaffold is prefill-only (no history).
         o = custom_ops.fused_attn_forward(
-            q, cache_k, cache_v, S, self.softmax_scale)
+            q, cache_k, cache_v, S, self.softmax_scale, cos, sin)
 
         # 6) Output projection. Mirror HF's reshape: transpose heads back
         #    to the inner axis, flatten to (M, H_q).

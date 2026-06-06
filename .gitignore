@@ -17,3 +17,6 @@ src/.DS_Store
 # pycaches 
 *__pycache__/
 *__pycache__/*
+
+src/target/kernels/runtime/*
+src/target/kernels/forward.cc

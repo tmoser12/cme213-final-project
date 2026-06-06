@@ -10,11 +10,12 @@
 #
 # Sub-benchmark names (files under benchmark_scripts/):
 #   benchmark_qkv_proj      benchmark_o_proj       (cuBLAS — ncu skipped)
-#   benchmark_rope          benchmark_kv_write     benchmark_fused_attn
+#   benchmark_fused_attn
+#   benchmark_rope_kv_write (RoPE-fused KV write — the pipeline's K path)
 #   benchmark_decode_attn   (decode/small-q attention, populated KV cache)
 #
 # Profile outputs (timestamped, never overwrite):
-#   /results/profiles/attention_<TARGET>_<stamp>.{nsys-rep,ncu-rep}
+#   results/profiles/<model>/attention/<sub-op>_<stamp>.{nsys-rep,ncu-rep}
 #
 # nsys is only produced for the umbrella benchmark; sub-ops get ncu only.
 # scp the .rep files back to a workstation and open them in the Nsight GUIs.
@@ -23,7 +24,7 @@ set -euo pipefail
 
 _SCRIPT="${BASH_SOURCE[0]}"
 _KERNEL_PARENT="$(cd "$(dirname "$_SCRIPT")" && pwd)"
-cd "$_KERNEL_PARENT/../../.."
+cd "$_KERNEL_PARENT/../../../.."
 source setup.sh
 
 KERNEL_DIR=$(basename "$_KERNEL_PARENT")            # "attention"
@@ -41,17 +42,17 @@ done
 
 # Umbrella lives in the kernel dir; sub-ops live in benchmark_scripts/.
 if [ "$TARGET" = "benchmark" ]; then
-    MODULE="src.kernels.${KERNEL_DIR}.${TARGET}"
+    MODULE="src.draft.kernels.${KERNEL_DIR}.${TARGET}"
 else
-    MODULE="src.kernels.${KERNEL_DIR}.benchmark_scripts.${TARGET}"
+    MODULE="src.draft.kernels.${KERNEL_DIR}.benchmark_scripts.${TARGET}"
 fi
 
 echo "=========================================================="
 echo "    $KERNEL_DIR / $TARGET   (profile=$PROFILE)"
 echo "    Module: $MODULE"
 echo "=========================================================="
-echo "[setup] Clearing PyTorch JIT cache for custom_${KERNEL_DIR}_ops..."
-rm -rf ~/.cache/torch_extensions/py311_cu121/custom_${KERNEL_DIR}_ops
+echo "[setup] Clearing PyTorch JIT cache for draft_${KERNEL_DIR}_ops..."
+rm -rf ~/.cache/torch_extensions/py311_cu121/draft_${KERNEL_DIR}_ops
 
 # ---- No-profile path: just run the benchmark -------------------------------
 if [ "$PROFILE" = false ]; then
@@ -65,15 +66,26 @@ fi
 # that collides with other users. Redirect to a per-user dir.
 export TMPDIR="$HOME/tmp"
 mkdir -p "$TMPDIR"
-OUT_DIR="$PROJECT_ROOT/results/profiles"
+# Route profiles into results/profiles/<model>/<group>/ (model from path, group from kernel).
+case "$_KERNEL_PARENT" in
+    */src/draft/*)  MODEL=draft ;;
+    */src/target/*) MODEL=target ;;
+    *)              MODEL=unknown ;;
+esac
+case "$KERNEL_DIR" in
+    swiglu)    GROUP=swiglu ;;
+    attention) GROUP=attention ;;
+    *)         GROUP=misc ;;
+esac
+OUT_DIR="$PROJECT_ROOT/results/profiles/$MODEL/$GROUP"
 mkdir -p "$OUT_DIR"
 STAMP=$(date +%Y%m%d_%H%M%S)
-OUT_BASE="$OUT_DIR/${KERNEL_DIR}_${TARGET}_${STAMP}"
+LABEL="${TARGET#benchmark_}"; [ "$TARGET" = "benchmark" ] && LABEL="attention"
+OUT_BASE="$OUT_DIR/${LABEL}_${STAMP}"
 
 case "$TARGET" in
-    benchmark)            KERNEL_REGEX="rope_kernel|kv_write_kernel|flash_attention_kernel" ;;
-    benchmark_rope)       KERNEL_REGEX="rope_kernel" ;;
-    benchmark_kv_write)   KERNEL_REGEX="kv_write_kernel" ;;
+    benchmark)            KERNEL_REGEX="rope_kv_write_kernel|flash_attention_kernel" ;;
+    benchmark_rope_kv_write) KERNEL_REGEX="rope_kv_write_kernel" ;;
     benchmark_fused_attn) KERNEL_REGEX="flash_attention_kernel" ;;
     benchmark_decode_attn) KERNEL_REGEX="decode_attn_kernel" ;;
     benchmark_qkv_proj|benchmark_o_proj) KERNEL_REGEX="" ;;

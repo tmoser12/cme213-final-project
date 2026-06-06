@@ -14,24 +14,25 @@ from pathlib import Path
 from transformers import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2MLP
 
-from src.kernels.swiglu.wrapper import CustomQwenMLP
+from src.draft.kernels.swiglu.wrapper import CustomQwenMLP
 
-# Qwen2.5-7B-Instruct MLP dims.
-HIDDEN_SIZE = 3584
-INTERMEDIATE_SIZE = 18944
+# Qwen2.5-0.5B-Instruct MLP dims.
+HIDDEN_SIZE = 896
+INTERMEDIATE_SIZE = 4864
 
 # Shape sweep used by both timing benchmarks and the ncu profile path.
 CONFIGS = [
-    (1, 1),      # Auto-regressive decode phase
+    (1, 1),      # Auto-regressive decoding phase
     (1, 128),    # Short prompt
     (2, 128),    # Batched short prompt
     (8, 128),
     (8, 512),    # Medium prompt
     (16, 1024),  # Long batched prompt
+    (1, 1024),
 ]
 
 
-def make_qwen7b_config():
+def make_qwen05b_config():
     return Qwen2Config(
         hidden_size=HIDDEN_SIZE,
         intermediate_size=INTERMEDIATE_SIZE,
@@ -77,7 +78,7 @@ def run_benchmark_for_config(batch_size, seq_len, hf_baseline, hf_compiled, cust
 
 def profile_main(batch_size=8, seq_len=128):
     """Minimal single-launch workload for Nsight (nsys/ncu) capture."""
-    cfg = make_qwen7b_config()
+    cfg = make_qwen05b_config()
     hf_baseline = Qwen2MLP(cfg).cuda().half()
     custom_module = CustomQwenMLP(hf_baseline).cuda()
     x = torch.randn(batch_size, seq_len, HIDDEN_SIZE, dtype=torch.float16, device="cuda")
@@ -99,7 +100,7 @@ def profile_main(batch_size=8, seq_len=128):
 
 
 def main():
-    cfg = make_qwen7b_config()
+    cfg = make_qwen05b_config()
     print("Initializing models and triggering JIT compilations...")
     hf_baseline = Qwen2MLP(cfg).cuda().half()
     hf_compiled = torch.compile(hf_baseline)
@@ -125,7 +126,9 @@ def main():
     for r in results:
         report += f"{r['batch_size']:<12} | {r['seq_len']:<10} | {r['hf_eager_us']:<12.2f} | {r['hf_compiled_us']:<15.2f} | {r['custom_us']:<12.2f} | {r['speedup_vs_eager']:<14.2f}x | {r['speedup_vs_compiled']:<14.2f}x\n"
 
-    report_path = Path(__file__).resolve().parent / "benchmark_report.txt"
+    from src.profiling import report_file
+
+    report_path = report_file(__file__, "swiglu")
     with open(report_path, "w") as f:
         f.write(report)
     print(f"\n✅ Benchmark complete! Report saved to: {report_path}")

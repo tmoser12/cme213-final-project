@@ -140,17 +140,16 @@ torch::Tensor rmsnorm_forward(torch::Tensor input, torch::Tensor weight, float e
     int num_blocks = batch_size * seq_len;
     
     // DYNAMIC OCCUPANCY OPTIMIZATION:
-    // We know 1 thread processes 8 elements.
-    // If hidden_size is 3584, 3584 / 8 = 448 threads exactly.
-    // Since 448 is a multiple of 32 (14 warps) and <= 1024, 
-    // we set blockDim.x = 448. This completely eliminates any loop branching!
-    int num_threads = 256; 
+    // 1 thread processes 8 elements (one float4), so the ideal thread count is
+    // hidden_size / 8. For Qwen2.5-0.5B (hidden_size 896) that is 112, which is
+    // NOT a warp multiple. blockReduceSum's __shfl_down_sync uses a full 0xffffffff
+    // mask, so every warp must be complete -- we round the thread count UP to the
+    // next multiple of 32 (112 -> 128). Threads past element 112 just contribute a
+    // zero partial sum. (7B's hidden_size 3584 gives 448 exactly, as before.)
     int target_threads = hidden_size / 8;
-    if (target_threads <= 1024 && target_threads % 32 == 0) {
-        num_threads = target_threads;
-    } else if (target_threads > 1024) {
-        num_threads = 1024;
-    }
+    int num_threads = ((target_threads + 31) / 32) * 32;   // round up to a full warp
+    if (num_threads > 1024) num_threads = 1024;
+    if (num_threads < 32)   num_threads = 32;
     
     rmsnorm_forward_kernel_vectorized<<<num_blocks, num_threads>>>(
         reinterpret_cast<const half*>(input.data_ptr<at::Half>()),

@@ -1,12 +1,13 @@
-"""src/kernels/attention/jit.py
-JIT-compile and load the custom attention CUDA extension.
+"""src/kernels/residual_ops/jit.py
+JIT-compile and load the custom residual-ops CUDA extension (residual_add +
+lm_head).
 
 First call compiles `kernel.cu` + `bindings.cpp` into a .so under
-~/.cache/torch_extensions/.../draft_attention_ops/. Subsequent calls
-reuse the cached build.
+~/.cache/torch_extensions/.../draft_residual_ops/. Subsequent calls reuse
+the cached build.
 
 If JIT picks up a stale build after editing the .cu, nuke the cache:
-    rm -rf ~/.cache/torch_extensions/*/draft_attention_ops
+    rm -rf ~/.cache/torch_extensions/*/draft_residual_ops
 """
 
 import os
@@ -43,12 +44,12 @@ from torch.utils.cpp_extension import load  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 
-def load_attention_ops():
-    """Compile (if needed) and return the attention extension module."""
+def load_residual_ops():
+    """Compile (if needed) and return the residual-ops extension module."""
     _sanitize_env_for_nvcc()
     d = Path(__file__).resolve().parent
     return load(
-        name="draft_attention_ops",
+        name="draft_residual_ops",
         sources=[d / "kernel.cu", d / "bindings.cpp"],
         extra_cuda_cflags=["-O3", "--use_fast_math", "-arch=sm_75"],
         verbose=True,

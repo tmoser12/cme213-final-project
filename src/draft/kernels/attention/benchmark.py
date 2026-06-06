@@ -13,24 +13,26 @@ from pathlib import Path
 from transformers import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2RotaryEmbedding
 
-from src.kernels.attention.wrapper import CustomQwen2Attention
+from src.draft.kernels.attention.wrapper import CustomQwen2Attention
 
 CONFIGS = [
-    (1, 1),       # Auto-regressive decode
-    (1, 128),     # Short prompt
-    (1, 256),     # Batched short prompt
-    (1, 512),
-    (1, 2048),     # Medium prompt
-    (1, 8192),   # Long batched prompt
+    (1, 1),      # Auto-regressive decoding phase
+    (1, 128),    # Short prompt
+    (2, 128),    # Batched short prompt
+    (8, 128),
+    (8, 512),    # Medium prompt
+    (16, 1024),  # Long batched prompt
+    (1, 1024),
 ]
 
 
-def make_qwen7b_config():
+def make_qwen05b_config():
+    # Qwen2.5-0.5B-Instruct: head_dim = 896 / 14 = 64.
     return Qwen2Config(
-        hidden_size=3584,
-        num_attention_heads=28,
-        num_key_value_heads=4,
-        intermediate_size=18944,
+        hidden_size=896,
+        num_attention_heads=14,
+        num_key_value_heads=2,
+        intermediate_size=4864,
         max_position_embeddings=32768,
         rope_theta=1000000.0,
     )
@@ -82,7 +84,7 @@ def run_benchmark_for_config(batch_size, seq_len, cfg, hf_baseline, hf_compiled,
 
 
 def profile_main(batch_size=8, seq_len=128):
-    cfg = make_qwen7b_config()
+    cfg = make_qwen05b_config()
     hf_baseline = Qwen2Attention(cfg, layer_idx=0).cuda().half()
     rotary_emb = Qwen2RotaryEmbedding(config=cfg).cuda()
     custom_module = CustomQwen2Attention(hf_baseline).cuda()
@@ -107,7 +109,7 @@ def profile_main(batch_size=8, seq_len=128):
 
 
 def main():
-    cfg = make_qwen7b_config()
+    cfg = make_qwen05b_config()
     print("Initializing models and triggering JIT compilations...")
     hf_baseline = Qwen2Attention(cfg, layer_idx=0).cuda().half()
     hf_compiled = torch.compile(hf_baseline)
@@ -146,7 +148,9 @@ def main():
     for r in results:
         report += f"{r['batch_size']:<8}| {r['seq_len']:<6}| {r['hf_eager_us']:<12.2f}| {r['hf_compiled_us']:<15.2f}| {r['custom_us']:<12.2f}| {r['speedup_vs_eager']:<14.2f}x| {r['speedup_vs_compiled']:<14.2f}x\n"
 
-    report_path = Path(__file__).resolve().parent / "benchmark_report.txt"
+    from src.profiling import report_file
+
+    report_path = report_file(__file__, "attention")
     with open(report_path, "w") as f:
         f.write(report)
     print(f"\n✅ Benchmark complete! Report saved to: {report_path}")

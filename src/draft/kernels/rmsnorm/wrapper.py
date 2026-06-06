@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from src.kernels.rmsnorm.jit import get_ops
+from src.draft.kernels.rmsnorm.jit import get_ops
 
 custom_ops = get_ops()
 

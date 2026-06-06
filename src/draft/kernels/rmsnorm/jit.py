@@ -27,7 +27,7 @@ from pathlib import Path
 def get_ops():
     d = Path(__file__).resolve().parent
     return load(
-        name="custom_rmsnorm_ops",
+        name="draft_rmsnorm_ops",
         sources=[d / "kernel.cu", d / "bindings.cpp"],
         extra_cuda_cflags=["-O3", "--use_fast_math", "-arch=sm_75"] # Turing GPU optimized
     )

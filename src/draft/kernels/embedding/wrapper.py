@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from jit import load_embedding_ops
+from src.draft.kernels.embedding.jit import load_embedding_ops
 
 custom_ops = load_embedding_ops()
 

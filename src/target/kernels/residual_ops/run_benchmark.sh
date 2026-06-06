@@ -8,7 +8,7 @@
 #   bash run_benchmark.sh --profile   # benchmark.py + nsys timeline + ncu metrics
 #
 # Profile outputs (timestamped, never overwrite):
-#   <project_root>/results/profiles/residual_ops_<stamp>.{nsys-rep,ncu-rep}
+#   <project_root>/results/profiles/<model>/misc/residual_ops_<stamp>.{nsys-rep,ncu-rep}
 #
 # Note: lm_head is a cuBLAS GEMM with no custom __global__ kernel, so ncu's
 # per-kernel metrics target only residual_add_kernel; the GEMM shows up in the
@@ -49,7 +49,18 @@ fi
 # ---- Profile path ----------------------------------------------------------
 export TMPDIR="$HOME/tmp"
 mkdir -p "$TMPDIR"
-OUT_DIR="$PROJECT_ROOT/results/profiles"
+# Route profiles into results/profiles/<model>/<group>/ (model from path, group from kernel).
+case "$_KERNEL_PARENT" in
+    */src/draft/*)  MODEL=draft ;;
+    */src/target/*) MODEL=target ;;
+    *)              MODEL=unknown ;;
+esac
+case "$KERNEL_DIR" in
+    swiglu)    GROUP=swiglu ;;
+    attention) GROUP=attention ;;
+    *)         GROUP=misc ;;
+esac
+OUT_DIR="$PROJECT_ROOT/results/profiles/$MODEL/$GROUP"
 mkdir -p "$OUT_DIR"
 STAMP=$(date +%Y%m%d_%H%M%S)
 OUT_BASE="$OUT_DIR/${KERNEL_DIR}_${STAMP}"

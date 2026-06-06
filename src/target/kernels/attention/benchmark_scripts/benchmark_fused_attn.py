@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 from pathlib import Path
 
-from transformers.models.qwen2.modeling_qwen2 import repeat_kv
+from transformers.models.qwen2.modeling_qwen2 import repeat_kv, apply_rotary_pos_emb
 from src.target.kernels.attention.jit import load_attention_ops
 
 custom_ops = load_attention_ops()
@@ -26,7 +26,15 @@ GROUPS = NH // NKV
 MAX_SEQ = 32768
 SCALE = 1.0 / math.sqrt(D)
 
-CONFIGS = [(1, 1), (1, 128), (1, 256), (1, 512), (1, 2048), (1, 16384)]
+CONFIGS = [
+    (1, 1),      # Auto-regressive decoding phase
+    (1, 128),    # Short prompt
+    (2, 128),    # Batched short prompt
+    (8, 128),
+    (8, 512),    # Medium prompt
+    (16, 1024),  # Long batched prompt
+    (1, 1024),
+]
 
 
 def make_inputs(batch_size, seq_len):
@@ -76,6 +84,20 @@ def run_benchmark_for_config(batch_size, seq_len, compiled_attn):
         out = custom_ops.fused_attn_forward(q, cache_k, cache_v, cur_len, SCALE)
         assert torch.allclose(ref, out, atol=1e-2, rtol=1e-2), \
             f"fused_attn mismatch at B={batch_size}, S={seq_len}"
+
+        # Fused rope-on-Q path: passing cos/sin makes the kernel rotate Q on
+        # load; the oracle rotates q explicitly before SDPA. K/V come from the
+        # cache un-rotated in both (the kernel only rotates Q). cos/sin are
+        # [B, S, D] with the upper D/2 duplicating the lower D/2.
+        cos_half = torch.randn(batch_size, seq_len, D // 2, dtype=torch.float16, device=q.device)
+        sin_half = torch.randn(batch_size, seq_len, D // 2, dtype=torch.float16, device=q.device)
+        cos = torch.cat([cos_half, cos_half], dim=-1)
+        sin = torch.cat([sin_half, sin_half], dim=-1)
+        q_rot, _ = apply_rotary_pos_emb(q, q, cos, sin)
+        ref_rope = eager_fused_attn(q_rot, cache_k, cache_v, cur_len)
+        out_rope = custom_ops.fused_attn_forward(q, cache_k, cache_v, cur_len, SCALE, cos, sin)
+        assert torch.allclose(ref_rope, out_rope, atol=1e-2, rtol=1e-2), \
+            f"fused_attn rope-Q mismatch at B={batch_size}, S={seq_len}"
 
     with torch.no_grad():
         for _ in range(20):
@@ -130,7 +152,9 @@ def main():
                    f"{r['eager_us']:<12.2f}| {r['compiled_us']:<15.2f}| {r['custom_us']:<12.2f}| "
                    f"{r['speedup_vs_eager']:<14.2f}x| {r['speedup_vs_compiled']:<14.2f}x\n")
 
-    report_path = Path(__file__).resolve().parent / "benchmark_fused_attn_report.txt"
+    from src.profiling import report_file
+
+    report_path = report_file(__file__, "fused_attn")
     with open(report_path, "w") as f:
         f.write(report)
     print(f"\n✅ Report: {report_path}\n\n{report}")

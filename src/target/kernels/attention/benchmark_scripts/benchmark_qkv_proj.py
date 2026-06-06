@@ -20,7 +20,15 @@ H, NH, NKV, D = 3584, 28, 4, 128
 HQ = NH * D
 HKV = NKV * D
 
-CONFIGS = [(1, 1), (1, 128), (2, 128), (8, 128), (8, 512), (16, 1024)]
+CONFIGS = [
+    (1, 1),      # Auto-regressive decoding phase
+    (1, 128),    # Short prompt
+    (2, 128),    # Batched short prompt
+    (8, 128),
+    (8, 512),    # Medium prompt
+    (16, 1024),  # Long batched prompt
+    (1, 1024),
+]
 
 
 class EagerQKVProj(nn.Module):
@@ -136,7 +144,9 @@ def main():
                    f"{r['eager_us']:<12.2f}| {r['compiled_us']:<15.2f}| {r['custom_us']:<12.2f}| "
                    f"{r['speedup_vs_eager']:<14.2f}x| {r['speedup_vs_compiled']:<14.2f}x\n")
 
-    report_path = Path(__file__).resolve().parent / "benchmark_qkv_proj_report.txt"
+    from src.profiling import report_file
+
+    report_path = report_file(__file__, "qkv_proj")
     with open(report_path, "w") as f:
         f.write(report)
     print(f"\n✅ Report: {report_path}\n\n{report}")

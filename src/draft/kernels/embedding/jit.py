@@ -3,11 +3,11 @@ src/kernels/embedding/jit.py
 JIT-compile and load the custom embedding CUDA extension.
 
 First call compiles `kernel.cu` + `bindings.cpp` into a .so under
-~/.cache/torch_extensions/.../qwen_embedding_kernel/. Subsequent calls reuse
+~/.cache/torch_extensions/.../draft_embedding_ops/. Subsequent calls reuse
 the cached build, so the only cost is on first import.
 
 If JIT picks up a stale build after editing the .cu, nuke the cache:
-    rm -rf ~/.cache/torch_extensions/*/qwen_embedding_kernel
+    rm -rf ~/.cache/torch_extensions/*/draft_embedding_ops
 """
 
 import os
@@ -84,7 +84,7 @@ def load_embedding_ops():
 
     here = Path(__file__).resolve().parent
     return load(
-        name="qwen_embedding_kernel",
+        name="draft_embedding_ops",
         sources=[str(here / "kernel.cu"), str(here / "bindings.cpp")],
         extra_cuda_cflags=["-O3", "--use_fast_math", "-arch=sm_75"],
         extra_cflags=["-O3"],

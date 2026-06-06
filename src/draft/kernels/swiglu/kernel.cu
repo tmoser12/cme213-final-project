@@ -167,8 +167,8 @@ torch::Tensor swiglu_act_forward(torch::Tensor gate, torch::Tensor up) {
 
 // ----------------------------------------------------------------------------
 // Full fused SwiGLU MLP:  out = down_proj( silu(gate_proj(x)) * up_proj(x) ).
-//   x:       [M, H]   (M = batch*seq, H = hidden_size = 3584 for 7B)
-//   W_gate:  [I, H]   (gate_proj.weight; I = intermediate_size = 18944 for 7B)
+//   x:       [M, H]   (M = batch*seq, H = hidden_size = 896 for 0.5B)
+//   W_gate:  [I, H]   (gate_proj.weight; I = intermediate_size = 4864 for 0.5B)
 //   W_up:    [I, H]   (up_proj.weight)
 //   W_down:  [H, I]   (down_proj.weight)
 // Returns out: [M, H] -- the MLP output, ready to add to the residual stream.

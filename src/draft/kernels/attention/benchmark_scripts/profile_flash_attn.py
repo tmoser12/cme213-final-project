@@ -20,7 +20,7 @@ so that warmup is excluded from the capture without --launch-skip math.
 import math
 import torch
 
-from src.kernels.attention.jit import load_attention_ops
+from src.draft.kernels.attention.jit import load_attention_ops
 
 
 # ============================================================
@@ -32,8 +32,8 @@ BATCH_SIZE = 1
 SEQ_LEN    = 2048
 # ============================================================
 
-# Qwen2.5-7B attention shape (fixed).
-NUM_HEADS, NUM_KV_HEADS, HEAD_DIM = 28, 4, 128
+# Qwen2.5-0.5B attention shape (fixed): 14 query / 2 KV heads, head_dim 64.
+NUM_HEADS, NUM_KV_HEADS, HEAD_DIM = 14, 2, 64
 MAX_SEQ = 2048
 SCALE   = 1.0 / math.sqrt(HEAD_DIM)
 

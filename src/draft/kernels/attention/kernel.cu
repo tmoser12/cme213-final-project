@@ -1,13 +1,13 @@
 // src/kernels/attention/kernel.cu
 // Custom CUDA attention sub-ops for Qwen2.5.
 //
-// Five host launchers (scaffold — __global__ bodies and cuBLAS calls not yet
-// written). See src/kernels/attention/wrapper.py for orchestration.
-//   1. qkv_proj_forward   — fused QKV projection (cuBLAS GEMM, fp16)
-//   2. rope_forward       — in-place rotary on Q and K (custom kernel)
-//   3. kv_write_forward   — scatter new K/V into paged cache (custom kernel)
-//   4. fused_attn_forward — causal SDPA, GQA-aware (custom kernel)
-//   5. o_proj_forward     — output projection (cuBLAS GEMM, fp16)
+// Host launchers for the fused attention path. See
+// src/kernels/attention/wrapper.py for orchestration.
+//   1. qkv_proj_forward      — fused QKV projection (cuBLAS GEMM, fp16)
+//   2. rope_kv_write_forward — rotate K (RoPE) + scatter K/V into paged cache
+//   3. fused_attn_forward    — causal SDPA, GQA-aware, fused RoPE on Q (prefill)
+//   4. decode_attn_forward / small_q_attn_forward — decode/verify SDPA + RoPE on Q
+//   5. o_proj_forward        — output projection (cuBLAS GEMM, fp16)
 
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>     // at::cuda::getCurrentCUDABlasHandle
@@ -52,8 +52,8 @@ torch::Tensor qkv_proj_forward(torch::Tensor x,
                 "qkv_proj: b_qkv length must equal W_qkv rows");
 
     const int64_t M = x.size(0);          // rows of X and rows of output Y (batch size * seq len)
-    const int64_t K = x.size(1);          // hidden_size (3584 for Qwen2.5-7B)
-    const int64_t N = W_qkv.size(0);      // H_q + 2*H_kv (4608 for 7B)
+    const int64_t K = x.size(1);          // hidden_size (896 for Qwen2.5-0.5B)
+    const int64_t N = W_qkv.size(0);      // H_q + 2*H_kv (14*64 + 2*2*64 = 1152 for 0.5B)
 
     // Initialize output y as broadcasted bias so the GEMM (beta=1) accumulates
     // into it. 
@@ -88,175 +88,123 @@ torch::Tensor qkv_proj_forward(torch::Tensor x,
     return y;
 }
 
-// RoPE kernel
-__global__ void rope_kernel(
-    __half*       __restrict__ x,     // [B, H, S, D] row-major; mutated in place
-    const __half* __restrict__ cos,   // [B, S, D]   (last D/2 entries duplicate the first D/2)
-    const __half* __restrict__ sin,   // [B, S, D]
-    int H,                            // num_heads (Q) or num_kv_heads (K)
-    int S,                            // seq_len
-    int D                             // head_dim (must be even)
+// RoPE-fused KV write kernel. Rotates K (HF rotate_half) as it scatters into
+// the cache and copies V verbatim, folding the old rope-on-K + kv_write into a
+// single launch (removes K's extra global round-trip). cos/sin are [B, S, D]
+// (upper D/2 duplicates lower D/2), indexed by the LOCAL source row s; the
+// caller builds them at the K rows' absolute positions, so write_pos only
+// shifts the destination row in the cache. One block per (batch, kv_head).
+__global__ void rope_kv_write_kernel(
+    const __half* __restrict__ new_k,     // [B, H_kv, S, D] src K (un-rotated)
+    const int4*   __restrict__ new_v4,    // [B, H_kv, S, D] src V, viewed int4
+    __half*       __restrict__ cache_k,   // [B, H_kv, max_seq, D] dst K
+    int4*         __restrict__ cache_v4,  // dst V, viewed int4
+    const __half* __restrict__ cos,       // [B, S, D]
+    const __half* __restrict__ sin,       // [B, S, D]
+    int H_kv, int S, int D, int max_seq, int write_pos
 ) {
-    int b = blockIdx.x;
-    int h = blockIdx.y;
-    int s = blockIdx.z * blockDim.y + threadIdx.y;
-    int d = threadIdx.x;
-    if (s >= S) return;
+    const int bh = blockIdx.x;            // batch * H_kv + kv_head
+    const int b  = bh / H_kv;             // batch index (cos/sin shared over heads)
+    const int tid = threadIdx.x;
+    const int half = D / 2;
+    const int D_v4 = D / 8;
 
-    int x_offset = ((b * H + h) * S + s) * D;
+    // --- V: pure int4 copy (not rotated) ------------------------------------
+    const int v_in_base  = bh * (S * D_v4);
+    const int v_out_base = bh * (max_seq * D_v4) + write_pos * D_v4;
+    const int v_vecs     = S * D_v4;
+    for (int i = tid; i < v_vecs; i += blockDim.x)
+        cache_v4[v_out_base + i] = new_v4[v_in_base + i];
 
-    float x_0 = __half2float(x[x_offset + d]);
-    float x_1 = __half2float(x[x_offset + d + D/2]);
-
-    int cos_offset = (b * S + s) * D;
-    float cos_val = __half2float(cos[cos_offset + d]);
-    float sin_val = __half2float(sin[cos_offset + d]);
-
-    x[x_offset + d] = __float2half(x_0 * cos_val - x_1 * sin_val);
-    x[x_offset + d + D/2] = __float2half(x_1 * cos_val + x_0 * sin_val);
-
-}
-
-
-// 2. In-place RoPE on Q and K.
-//    q:[B, num_heads, S, D], k:[B, num_kv_heads, S, D], cos/sin:[..., D].
-void rope_forward(torch::Tensor q,
-                  torch::Tensor k,
-                  torch::Tensor cos,
-                  torch::Tensor sin) {
-    TORCH_CHECK(q.is_cuda() && k.is_cuda() && cos.is_cuda() && sin.is_cuda(),
-                "rope: all tensors must be CUDA");
-    TORCH_CHECK(q.is_contiguous() && k.is_contiguous(),
-                "rope: q and k must be contiguous (mutated in place)");
-    TORCH_CHECK(q.scalar_type() == torch::kHalf &&
-                k.scalar_type() == torch::kHalf &&
-                cos.scalar_type() == torch::kHalf &&
-                sin.scalar_type() == torch::kHalf,
-                "rope: all tensors must be float16");
-    TORCH_CHECK(q.dim() == 4 && k.dim() == 4,
-                "rope: q and k must be 4-D [B, H_*, S, D]");
-    TORCH_CHECK(q.size(0) == k.size(0) &&
-                q.size(2) == k.size(2) &&
-                q.size(3) == k.size(3),
-                "rope: q and k must share batch / seq / head_dim");
-    TORCH_CHECK(cos.size(-1) == q.size(3) && sin.size(-1) == q.size(3),
-                "rope: cos/sin last dim must equal head_dim");
-
-    // RoPE kernel: rotates q and k in place.
-    const int B = q.size(0);
-    const int HQ = q.size(1);
-    const int HKV = k.size(1);
-    const int S = q.size(2);
-    const int D = q.size(3);
-    constexpr int TILE_SEQ = 8;
-
-    dim3 grid(B, HQ, (S + TILE_SEQ - 1) / TILE_SEQ);
-    dim3 block(D / 2, TILE_SEQ);
-
-    auto* cos_ptr = reinterpret_cast<const __half*>(cos.data_ptr<at::Half>());
-    auto* sin_ptr = reinterpret_cast<const __half*>(sin.data_ptr<at::Half>());
-
-    // Q Rope first, 28 query heads
-    rope_kernel<<<grid, block>>>(reinterpret_cast<__half*>(q.data_ptr<at::Half>()),
-                                 cos_ptr, sin_ptr, HQ, S, D);
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
-
-    // K Rope next, 4 key value heads
-    dim3 grid_k(B, HKV, (S + TILE_SEQ - 1) / TILE_SEQ);
-    dim3 block_k(D / 2, TILE_SEQ);
-    rope_kernel<<<grid_k, block_k>>>(reinterpret_cast<__half*>(k.data_ptr<at::Half>()),
-                                     cos_ptr, sin_ptr, HKV, S, D);
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
-}
-
-// KV write kernel
-__global__ void kv_write_kernel(
-    const int4* __restrict__ new_k,        // src K, viewed as int4 (one int4 = 8 fp16)
-    const int4* __restrict__ new_v,        // src V, same layout as new_k
-    int4*       __restrict__ cache_k,      // dst K base ptr (slab + write offsets added below)
-    int4*       __restrict__ cache_v,      // dst V base ptr
-    int slab_vecs_in,                      // int4s per src slab    = S       * D / 8
-    int slab_vecs_out,                     // int4s per dst slab    = max_seq * D / 8
-    int write_off_vecs                     // int4 offset into dst slab = write_pos * D / 8
-) {
-    // Which head does this block own?
-    const int bh = blockIdx.x;
-
-    const int4* sk = new_k   + bh * slab_vecs_in; // source key, points to the head that this block is responsible for
-    const int4* sv = new_v   + bh * slab_vecs_in; // source value, points to the head that this block is responsible for
-
-    int4* dk = cache_k + bh * slab_vecs_out + write_off_vecs; // destination key, points to the head that this block is responsible for
-    int4* dv = cache_v + bh * slab_vecs_out + write_off_vecs; // destination value, points to the head that this block is responsible for
-
-    for (int i = threadIdx.x; i < slab_vecs_in; i += blockDim.x) {
-        // 16-byte load + 16-byte store for K, same for V. The compiler
-        // will pipeline these so the V-load issues before K's store has
-        // to wait on the K-load to return -- giving us memory-level
-        // parallelism within a single thread.
-        dk[i] = sk[i];
-        dv[i] = sv[i];
+    // --- K: rotate_half into the cache --------------------------------------
+    const int k_in_base  = bh * S * D;                        // halves
+    const int k_out_base = bh * max_seq * D + write_pos * D;  // halves
+    const int cos_base   = b * S * D;                         // halves
+    const int total      = S * half;
+    for (int i = tid; i < total; i += blockDim.x) {
+        const int s = i / half;
+        const int d = i % half;
+        const int koff = k_in_base + s * D;
+        const float x0 = __half2float(new_k[koff + d]);
+        const float x1 = __half2float(new_k[koff + d + half]);
+        const int coff = cos_base + s * D + d;
+        const float c  = __half2float(cos[coff]);
+        const float sn = __half2float(sin[coff]);
+        const int doff = k_out_base + s * D;
+        cache_k[doff + d]        = __float2half(x0 * c - x1 * sn);
+        cache_k[doff + d + half] = __float2half(x1 * c + x0 * sn);
     }
 }
 
-// 3. KV write: scatter new_k/new_v into the cache_k/cache_v at [..., write_pos:write_pos+S, :]. 
-// We should fuse this into QKV projection.
-void kv_write_forward(torch::Tensor new_k,
-                      torch::Tensor new_v,
-                      torch::Tensor cache_k,
-                      torch::Tensor cache_v,
-                      int64_t write_pos) {
+// RoPE-fused KV write: rotate new_k (rotate_half) and scatter it plus new_v
+// into cache_k/cache_v at [..., write_pos:write_pos+S, :]. This is the single
+// fused op for the K path: rope-on-K happens here, not in a separate pass.
+void rope_kv_write_forward(torch::Tensor new_k,
+                           torch::Tensor new_v,
+                           torch::Tensor cache_k,
+                           torch::Tensor cache_v,
+                           int64_t write_pos,
+                           torch::Tensor cos,
+                           torch::Tensor sin) {
     TORCH_CHECK(new_k.is_cuda() && new_v.is_cuda() &&
-                cache_k.is_cuda() && cache_v.is_cuda(),
-                "kv_write: all tensors must be CUDA");
+                cache_k.is_cuda() && cache_v.is_cuda() &&
+                cos.is_cuda() && sin.is_cuda(),
+                "rope_kv_write: all tensors must be CUDA");
     TORCH_CHECK(new_k.is_contiguous() && new_v.is_contiguous() &&
-                cache_k.is_contiguous() && cache_v.is_contiguous(),
-                "kv_write: all tensors must be contiguous");
+                cache_k.is_contiguous() && cache_v.is_contiguous() &&
+                cos.is_contiguous() && sin.is_contiguous(),
+                "rope_kv_write: all tensors must be contiguous");
     TORCH_CHECK(new_k.scalar_type() == torch::kHalf &&
                 new_v.scalar_type() == torch::kHalf &&
                 cache_k.scalar_type() == torch::kHalf &&
-                cache_v.scalar_type() == torch::kHalf,
-                "kv_write: all tensors must be float16");
+                cache_v.scalar_type() == torch::kHalf &&
+                cos.scalar_type() == torch::kHalf &&
+                sin.scalar_type() == torch::kHalf,
+                "rope_kv_write: all tensors must be float16");
     TORCH_CHECK(new_k.dim() == 4 && cache_k.dim() == 4,
-                "kv_write: K/V tensors must be 4-D [B, H_kv, S, D]");
+                "rope_kv_write: K/V tensors must be 4-D [B, H_kv, S, D]");
     TORCH_CHECK(new_k.size(0) == cache_k.size(0) &&
                 new_k.size(1) == cache_k.size(1) &&
                 new_k.size(3) == cache_k.size(3),
-                "kv_write: new and cache K must share batch / kv_heads / head_dim");
+                "rope_kv_write: new and cache K must share batch / kv_heads / head_dim");
+    TORCH_CHECK(cos.size(-1) == new_k.size(3) && sin.size(-1) == new_k.size(3),
+                "rope_kv_write: cos/sin last dim must equal head_dim");
+    // Enforce the cos/sin contract: the table is sized to the NEW tokens (one
+    // row per K row, indexed locally), NOT the full sequence. The caller bakes
+    // each new token's absolute position into the cos/sin VALUES; write_pos only
+    // shifts the cache destination. A full-[max_seq] table would silently rotate
+    // by the wrong rows, so reject it here.
+    TORCH_CHECK(cos.size(-2) == new_k.size(2) && sin.size(-2) == new_k.size(2),
+                "rope_kv_write: cos/sin seq dim must equal S (the new-token count); "
+                "pass cos/sin sized to the new tokens, not the full sequence");
     TORCH_CHECK(write_pos >= 0,
-                "kv_write: write_pos must be non-negative");
+                "rope_kv_write: write_pos must be non-negative");
     TORCH_CHECK(write_pos + new_k.size(2) <= cache_k.size(2),
-                "kv_write: write_pos + S exceeds cache max_seq_len");
+                "rope_kv_write: write_pos + S exceeds cache max_seq_len");
 
-    // --- Launch the scatter kernel. -----------------------------------------
+    const int B       = static_cast<int>(new_k.size(0));
+    const int H_kv    = static_cast<int>(new_k.size(1));
+    const int S       = static_cast<int>(new_k.size(2));
+    const int D       = static_cast<int>(new_k.size(3));
+    const int max_seq = static_cast<int>(cache_k.size(2));
 
-    const int B       = static_cast<int>(new_k.size(0)); // batch size
-    const int H_kv    = static_cast<int>(new_k.size(1)); // number of key value heads=4
-    const int S       = static_cast<int>(new_k.size(2)); // sequence length
-    const int D       = static_cast<int>(new_k.size(3)); // head dimension
-    const int max_seq = static_cast<int>(cache_k.size(2)); // maximum sequence length
-
-    // Assert head dimension D must be a multiple of 8 for vectorized loads and stores
     TORCH_CHECK(D % 8 == 0,
-                "kv_write: head_dim must be a multiple of 8 for int4 vectorization (got ", D, ")");
+                "rope_kv_write: head_dim must be a multiple of 8 for int4 V copy (got ", D, ")");
 
-    const int D_v4           = D / 8;                               // int4s per k/v vector, head dimension (128) divided into int4 chunks of 16 bytes
-    const int slab_vecs_in   = S * D_v4;                            // int4s per src slab, number of tokens being written in * int4 per token
-    const int slab_vecs_out  = max_seq * D_v4;                      // int4s per dst slab, maximum sequence length * int4 per token
-    const int write_off_vecs = static_cast<int>(write_pos) * D_v4;  // offset where we're writing
+    const int4* new_v4_ptr   = reinterpret_cast<const int4*>(new_v.data_ptr<at::Half>());
+    int4*       cache_v4_ptr = reinterpret_cast<int4*>(cache_v.data_ptr<at::Half>());
 
-    // Reinterpret the fp16 storage as int4 (16 B = 8 fp16) for vectorized loads and stores
-    const int4* new_k_ptr = reinterpret_cast<const int4*>(new_k.data_ptr<at::Half>());
-    const int4* new_v_ptr = reinterpret_cast<const int4*>(new_v.data_ptr<at::Half>());
-    int4*       cache_k_ptr = reinterpret_cast<int4*>(cache_k.data_ptr<at::Half>());
-    int4*       cache_v_ptr = reinterpret_cast<int4*>(cache_v.data_ptr<at::Half>());
-
-    // One block per head; 256 threads perform the loads 
     const int threads = 256;
-    const int blocks  = B * H_kv; // one thread block per head per batch 
+    const int blocks  = B * H_kv;
 
-    kv_write_kernel<<<blocks, threads>>>(
-        new_k_ptr, new_v_ptr, cache_k_ptr, cache_v_ptr,
-        slab_vecs_in, slab_vecs_out, write_off_vecs);
+    rope_kv_write_kernel<<<blocks, threads>>>(
+        reinterpret_cast<const __half*>(new_k.data_ptr<at::Half>()),
+        new_v4_ptr,
+        reinterpret_cast<__half*>(cache_k.data_ptr<at::Half>()),
+        cache_v4_ptr,
+        reinterpret_cast<const __half*>(cos.data_ptr<at::Half>()),
+        reinterpret_cast<const __half*>(sin.data_ptr<at::Half>()),
+        H_kv, S, D, max_seq, static_cast<int>(write_pos));
 
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -272,27 +220,29 @@ __global__ void flash_attention_kernel(
     __half*       __restrict__ o,       // [B, h_q,  seq_len, D]
     float softmax_scale,
     int B, int h_q, int h_kv,
-    int seq_len, int max_seq, int cur_len)
+    int seq_len, int max_seq, int cur_len,
+    const __half* __restrict__ cos,     // [B, seq_len, D] or nullptr (no RoPE on Q)
+    const __half* __restrict__ sin)     // [B, seq_len, D] or nullptr
 {
     constexpr int NUM_WARPS     = NUM_THREADS / 32;       // 4
     constexpr int ROWS_PER_WARP = WMMA_M;                 // 16
     constexpr int N_BLOCKS      = KV_BLOCK / WMMA_N;      // 2 (S col-fragments / warp)
-    constexpr int K_BLOCKS      = D / WMMA_K;             // 8 (QK^T sum partitions)
-    constexpr int O_BLOCKS      = D / WMMA_N;             // 8 (O col-fragments / warp)
+    constexpr int K_BLOCKS      = D / WMMA_K;             // 4 at D=64 (QK^T sum partitions)
+    constexpr int O_BLOCKS      = D / WMMA_N;             // 4 at D=64 (O col-fragments / warp)
     constexpr int P_BLOCKS      = KV_BLOCK / WMMA_K;      // 2 (PV K-partitions)
-    constexpr int VECS_PER_ROW  = D / 8;                  // 16 (int4 per D-row of fp16)
+    constexpr int VECS_PER_ROW  = D / 8;                  // 8 at D=64 (int4 per D-row of fp16)
 
     constexpr int P_STRIDE      = KV_BLOCK + 8;           // 40
     static_assert(P_STRIDE % 8 == 0, "P_STRIDE must be a multiple of 8 for WMMA ldm");
     static_assert(Q_BLOCK == NUM_WARPS * ROWS_PER_WARP,
                   "Q_BLOCK must equal NUM_WARPS * WMMA_M");
 
-    // --- Shared memory ------------
-    __shared__ __half q_tile[Q_BLOCK][D];                 // 16 KB
-    __shared__ __half v_tile[KV_BLOCK][D];                //  8 KB
+    // --- Shared memory (sizes at D=64) ------------
+    __shared__ __half q_tile[Q_BLOCK][D];                 //  8 KB
+    __shared__ __half v_tile[KV_BLOCK][D];                //  4 KB
 
     union KPUnion {
-        __half k_tile[KV_BLOCK][D];                       //  8 KB
+        __half k_tile[KV_BLOCK][D];                       //  4 KB
         __half p_tile[Q_BLOCK][P_STRIDE];                 //  5 KB (padded; see P_STRIDE)
     };
     __shared__ KPUnion kp;
@@ -301,7 +251,7 @@ __global__ void flash_attention_kernel(
     const int q_block = blockIdx.x;
     const int head    = blockIdx.y;
     const int batch   = blockIdx.z;
-    const int kv_head = head / (h_q / h_kv);              // GQA: 28/4 = 7, head/7
+    const int kv_head = head / (h_q / h_kv);              // GQA: 14/2 = 7, head/7
     const int tid     = threadIdx.x;
     const int warp_id = tid >> 5;                          // 0..3
     const int lane    = tid & 31;                          // 0..31
@@ -341,6 +291,31 @@ __global__ void flash_attention_kernel(
         }
     }
     __syncthreads();
+
+    // --- Fused RoPE on Q (rotate_half), in shared memory --------------------
+    // Q is rotated here instead of in a separate global-memory pass: it is
+    // already resident in q_tile and consumed only by this kernel. cos/sin are
+    // [B, seq_len, D] indexed by the local query row. Masked trailing rows
+    // (q_row_global >= seq_len) are skipped; they hold zeros and never feed an
+    // output row.
+    if (cos != nullptr) {
+        constexpr int HALF = D / 2;
+        const int cos_slab = batch * seq_len * D;
+        for (int i = tid; i < Q_BLOCK * HALF; i += NUM_THREADS) {
+            const int row = i / HALF;
+            const int d   = i % HALF;
+            const int q_row_global = q_row_start + row;
+            if (q_row_global >= seq_len) continue;
+            const float x0 = __half2float(q_tile[row][d]);
+            const float x1 = __half2float(q_tile[row][d + HALF]);
+            const int coff = cos_slab + q_row_global * D + d;
+            const float c  = __half2float(cos[coff]);
+            const float sn = __half2float(sin[coff]);
+            q_tile[row][d]        = __float2half(x0 * c - x1 * sn);
+            q_tile[row][d + HALF] = __float2half(x1 * c + x0 * sn);
+        }
+        __syncthreads();
+    }
 
     // --- KV iteration bounds -----------------------------------------------
     const int q_pos_offset  = cur_len - seq_len;
@@ -548,7 +523,9 @@ torch::Tensor fused_attn_forward(torch::Tensor q,
                                  torch::Tensor cache_k,
                                  torch::Tensor cache_v,
                                  int64_t cur_len,
-                                 double softmax_scale) {
+                                 double softmax_scale,
+                                 c10::optional<torch::Tensor> cos = c10::nullopt,
+                                 c10::optional<torch::Tensor> sin = c10::nullopt) {
     TORCH_CHECK(q.is_cuda() && cache_k.is_cuda() && cache_v.is_cuda(),
                 "fused_attn: all tensors must be CUDA");
     TORCH_CHECK(q.is_contiguous() && cache_k.is_contiguous() && cache_v.is_contiguous(),
@@ -574,12 +551,39 @@ torch::Tensor fused_attn_forward(torch::Tensor q,
     const int seq_len = q.size(2);
     const int max_seq = cache_k.size(2);
 
+    // Optional fused RoPE on Q. When provided, cos/sin are [B, seq_len, D]
+    // (upper D/2 duplicates lower D/2) at the query rows' absolute positions.
+    const __half* cos_ptr = nullptr;
+    const __half* sin_ptr = nullptr;
+    if (cos.has_value()) {
+        TORCH_CHECK(sin.has_value(), "fused_attn: cos provided without sin");
+        TORCH_CHECK(cos->is_cuda() && sin->is_cuda(),
+                    "fused_attn: cos/sin must be CUDA");
+        TORCH_CHECK(cos->is_contiguous() && sin->is_contiguous(),
+                    "fused_attn: cos/sin must be contiguous");
+        TORCH_CHECK(cos->scalar_type() == torch::kHalf &&
+                    sin->scalar_type() == torch::kHalf,
+                    "fused_attn: cos/sin must be float16");
+        TORCH_CHECK(cos->size(-1) == q.size(3) && sin->size(-1) == q.size(3),
+                    "fused_attn: cos/sin last dim must equal head_dim");
+        // cos/sin are sized to the query rows (one row per Q token, indexed
+        // locally); their values carry each token's absolute position. Reject a
+        // full-sequence table, which would rotate Q by the wrong rows.
+        TORCH_CHECK(cos->size(-2) == q.size(2) && sin->size(-2) == q.size(2),
+                    "fused_attn: cos/sin seq dim must equal seq_len (the query length)");
+        cos_ptr = reinterpret_cast<const __half*>(cos->data_ptr<at::Half>());
+        sin_ptr = reinterpret_cast<const __half*>(sin->data_ptr<at::Half>());
+    }
+
     auto o = torch::empty_like(q);
 
     // Template params — see the geometry block at the top of the kernel.
+    // D = head_dim = 64 for Qwen2.5-0.5B. Q_BLOCK / KV_BLOCK are kept at 64 / 32:
+    // the warp fragment-index math (s_a/s_b extraction, my_cols) is hand-tuned for
+    // KV_BLOCK=32 / N_BLOCKS=2 and is independent of D, so only D changes here.
     constexpr int Q_block_size  = 64;
     constexpr int KV_block_size = 32;
-    constexpr int D             = 128;
+    constexpr int D             = 64;
     constexpr int NUM_THREADS   = 128;        // = 4 warps
     constexpr int WMMA_M        = 16;
     constexpr int WMMA_N        = 16;
@@ -596,7 +600,8 @@ torch::Tensor fused_attn_forward(torch::Tensor q,
             reinterpret_cast<__half*>(o.data_ptr<at::Half>()),
             static_cast<float>(softmax_scale),
             B, h_q, h_kv,
-            seq_len, max_seq, static_cast<int>(cur_len)
+            seq_len, max_seq, static_cast<int>(cur_len),
+            cos_ptr, sin_ptr
         );
 
     C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -633,17 +638,19 @@ __global__ void decode_attn_kernel(
     const __half* __restrict__ cache_v,  // [B, h_kv, max_seq,  D]
     __half*       __restrict__ o,        // [B, h_q,  Q_TOKENS, D]
     float softmax_scale,
-    int h_q, int h_kv, int max_seq, int cur_len)
+    int h_q, int h_kv, int max_seq, int cur_len,
+    const __half* __restrict__ cos,      // [B, Q_TOKENS, D] or nullptr (no RoPE on Q)
+    const __half* __restrict__ sin)      // [B, Q_TOKENS, D] or nullptr
 {
     // --- Block -> (batch, query head) --------------------------------------
     const int head    = blockIdx.y;
     const int batch   = blockIdx.z;
-    const int kv_head = head / (h_q / h_kv);             // GQA: 28/4 -> head/7
+    const int kv_head = head / (h_q / h_kv);             // GQA: 14/2 -> head/7
     const int tid     = threadIdx.x;
 
     // Query row r is the (cur_len - Q_TOKENS + r)-th token of the sequence; its
     // own K/V already sit in the cache at that position (callers run
-    // kv_write_forward first), so we only ever read K/V from the cache. Row r
+    // rope_kv_write_forward first), so we only ever read K/V from the cache. Row r
     // attends causally to cache positions kpos <= q_pos_base + r, which matches
     // F.scaled_dot_product_attention(is_causal=True) with q_len < k_len.
     const int q_pos_base = cur_len - Q_TOKENS;
@@ -651,7 +658,7 @@ __global__ void decode_attn_kernel(
     const int q_slab_base  = (batch * h_q  + head)    * Q_TOKENS * D;
     const int kv_slab_base = (batch * h_kv + kv_head) * max_seq  * D;
 
-    // --- Shared memory (~23 KB at Q_TOKENS=8; under the 48 KB Turing limit) --
+    // --- Shared memory (~12 KB at Q_TOKENS=8, D=64; under the 48 KB Turing limit) --
     __shared__ __half q_sh[Q_TOKENS][D];          // query rows (loaded once)
     __shared__ __half k_sh[KV_TILE][D];           // current KV tile
     __shared__ __half v_sh[KV_TILE][D];
@@ -670,6 +677,26 @@ __global__ void decode_attn_kernel(
     if (tid < Q_TOKENS) { m_sh[tid] = -INFINITY; l_sh[tid] = 0.0f; }
     __syncthreads();
 
+    // --- Fused RoPE on Q (rotate_half), in shared memory --------------------
+    // cos/sin are [B, Q_TOKENS, D] indexed by the local query row r (the caller
+    // builds them at each row's absolute position). All Q_TOKENS rows are live.
+    if (cos != nullptr) {
+        const int HALF = D / 2;
+        const int cos_slab = batch * Q_TOKENS * D;
+        for (int i = tid; i < Q_TOKENS * HALF; i += NUM_THREADS) {
+            const int r = i / HALF;
+            const int d = i % HALF;
+            const float x0 = __half2float(q_sh[r][d]);
+            const float x1 = __half2float(q_sh[r][d + HALF]);
+            const int coff = cos_slab + r * D + d;
+            const float c  = __half2float(cos[coff]);
+            const float sn = __half2float(sin[coff]);
+            q_sh[r][d]        = __float2half(x0 * c - x1 * sn);
+            q_sh[r][d + HALF] = __float2half(x1 * c + x0 * sn);
+        }
+        __syncthreads();
+    }
+
     // --- Stream the KV cache in tiles --------------------------------------
     for (int tile0 = 0; tile0 < cur_len; tile0 += KV_TILE) {
 
@@ -684,7 +711,7 @@ __global__ void decode_attn_kernel(
         __syncthreads();
 
         // (2) Scores: one thread per (row, key) pair computes a full D-length
-        //     dot in fp32 (D=128 is cheap; no cross-thread reduction needed).
+        //     dot in fp32 (D=64 is cheap; no cross-thread reduction needed).
         //     Mask non-causal / past-end keys to -INF.
         for (int p = tid; p < Q_TOKENS * KV_TILE; p += NUM_THREADS) {
             const int r    = p / KV_TILE;
@@ -771,8 +798,8 @@ static void decode_attn_check(const torch::Tensor& q,
                 "decode_attn: cache_k and cache_v must have identical shape");
     TORCH_CHECK(q.size(0) == cache_k.size(0),
                 "decode_attn: batch sizes must match");
-    TORCH_CHECK(q.size(3) == 128 && cache_k.size(3) == 128,
-                "decode_attn: head_dim must be 128 (kernel is templated on D=128)");
+    TORCH_CHECK(q.size(3) == 64 && cache_k.size(3) == 64,
+                "decode_attn: head_dim must be 64 (kernel is templated on D=64)");
     TORCH_CHECK(q.size(1) % cache_k.size(1) == 0,
                 "decode_attn: num_heads must be divisible by num_kv_heads (GQA)");
     const int64_t S = q.size(2);
@@ -785,7 +812,9 @@ static torch::Tensor launch_decode_attn(const torch::Tensor& q,
                                         const torch::Tensor& cache_k,
                                         const torch::Tensor& cache_v,
                                         int64_t cur_len,
-                                        double softmax_scale) {
+                                        double softmax_scale,
+                                        const __half* cos_ptr,
+                                        const __half* sin_ptr) {
     const int B       = q.size(0);
     const int h_q     = q.size(1);
     const int h_kv    = cache_k.size(1);
@@ -793,7 +822,7 @@ static torch::Tensor launch_decode_attn(const torch::Tensor& q,
 
     auto o = torch::empty_like(q);
 
-    constexpr int D           = 128;
+    constexpr int D           = 64;   // head_dim for Qwen2.5-0.5B
     constexpr int KV_TILE     = 32;
     constexpr int NUM_THREADS = 128;
 
@@ -806,7 +835,8 @@ static torch::Tensor launch_decode_attn(const torch::Tensor& q,
         reinterpret_cast<const __half*>(cache_v.data_ptr<at::Half>()),
         reinterpret_cast<__half*>(o.data_ptr<at::Half>()),
         static_cast<float>(softmax_scale),
-        h_q, h_kv, max_seq, static_cast<int>(cur_len));
+        h_q, h_kv, max_seq, static_cast<int>(cur_len),
+        cos_ptr, sin_ptr);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return o;
 }
@@ -817,16 +847,41 @@ static torch::Tensor dispatch_decode_attn(const torch::Tensor& q,
                                           const torch::Tensor& cache_k,
                                           const torch::Tensor& cache_v,
                                           int64_t cur_len,
-                                          double softmax_scale) {
+                                          double softmax_scale,
+                                          const c10::optional<torch::Tensor>& cos,
+                                          const c10::optional<torch::Tensor>& sin) {
+    // Optional fused RoPE on Q. cos/sin are [B, S, D] at the query rows'
+    // absolute positions; nullptr leaves Q un-rotated (pure attention).
+    const __half* cos_ptr = nullptr;
+    const __half* sin_ptr = nullptr;
+    if (cos.has_value()) {
+        TORCH_CHECK(sin.has_value(), "decode_attn: cos provided without sin");
+        TORCH_CHECK(cos->is_cuda() && sin->is_cuda(),
+                    "decode_attn: cos/sin must be CUDA");
+        TORCH_CHECK(cos->is_contiguous() && sin->is_contiguous(),
+                    "decode_attn: cos/sin must be contiguous");
+        TORCH_CHECK(cos->scalar_type() == torch::kHalf &&
+                    sin->scalar_type() == torch::kHalf,
+                    "decode_attn: cos/sin must be float16");
+        TORCH_CHECK(cos->size(-1) == q.size(3) && sin->size(-1) == q.size(3),
+                    "decode_attn: cos/sin last dim must equal head_dim");
+        // cos/sin are sized to the S query rows (indexed locally); their values
+        // carry each token's absolute position. Reject a full-sequence table.
+        TORCH_CHECK(cos->size(-2) == q.size(2) && sin->size(-2) == q.size(2),
+                    "decode_attn: cos/sin seq dim must equal S (the query length)");
+        cos_ptr = reinterpret_cast<const __half*>(cos->data_ptr<at::Half>());
+        sin_ptr = reinterpret_cast<const __half*>(sin->data_ptr<at::Half>());
+    }
+
     switch (q.size(2)) {
-        case 1: return launch_decode_attn<1>(q, cache_k, cache_v, cur_len, softmax_scale);
-        case 2: return launch_decode_attn<2>(q, cache_k, cache_v, cur_len, softmax_scale);
-        case 3: return launch_decode_attn<3>(q, cache_k, cache_v, cur_len, softmax_scale);
-        case 4: return launch_decode_attn<4>(q, cache_k, cache_v, cur_len, softmax_scale);
-        case 5: return launch_decode_attn<5>(q, cache_k, cache_v, cur_len, softmax_scale);
-        case 6: return launch_decode_attn<6>(q, cache_k, cache_v, cur_len, softmax_scale);
-        case 7: return launch_decode_attn<7>(q, cache_k, cache_v, cur_len, softmax_scale);
-        case 8: return launch_decode_attn<8>(q, cache_k, cache_v, cur_len, softmax_scale);
+        case 1: return launch_decode_attn<1>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
+        case 2: return launch_decode_attn<2>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
+        case 3: return launch_decode_attn<3>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
+        case 4: return launch_decode_attn<4>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
+        case 5: return launch_decode_attn<5>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
+        case 6: return launch_decode_attn<6>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
+        case 7: return launch_decode_attn<7>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
+        case 8: return launch_decode_attn<8>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
     }
     TORCH_CHECK(false, "decode_attn: unsupported S=", q.size(2),
                 " (must be in [1, ", MAX_VERIFY, "])");
@@ -838,12 +893,14 @@ torch::Tensor decode_attn_forward(torch::Tensor q,
                                   torch::Tensor cache_k,
                                   torch::Tensor cache_v,
                                   int64_t cur_len,
-                                  double softmax_scale) {
+                                  double softmax_scale,
+                                  c10::optional<torch::Tensor> cos = c10::nullopt,
+                                  c10::optional<torch::Tensor> sin = c10::nullopt) {
     decode_attn_check(q, cache_k, cache_v, cur_len);
     TORCH_CHECK(q.size(2) == 1,
                 "decode_attn_forward: expected S==1 (single-token decode); got S=",
                 q.size(2), " — use small_q_attn_forward for verify batches");
-    return dispatch_decode_attn(q, cache_k, cache_v, cur_len, softmax_scale);
+    return dispatch_decode_attn(q, cache_k, cache_v, cur_len, softmax_scale, cos, sin);
 }
 
 // S in [1, MAX_VERIFY]: speculative-decode verification of gamma+1 tokens.
@@ -851,12 +908,14 @@ torch::Tensor small_q_attn_forward(torch::Tensor q,
                                    torch::Tensor cache_k,
                                    torch::Tensor cache_v,
                                    int64_t cur_len,
-                                   double softmax_scale) {
+                                   double softmax_scale,
+                                   c10::optional<torch::Tensor> cos = c10::nullopt,
+                                   c10::optional<torch::Tensor> sin = c10::nullopt) {
     decode_attn_check(q, cache_k, cache_v, cur_len);
     const int64_t S = q.size(2);
     TORCH_CHECK(S >= 1 && S <= MAX_VERIFY,
                 "small_q_attn_forward: S must be in [1, ", MAX_VERIFY, "]; got ", S);
-    return dispatch_decode_attn(q, cache_k, cache_v, cur_len, softmax_scale);
+    return dispatch_decode_attn(q, cache_k, cache_v, cur_len, softmax_scale, cos, sin);
 }
 
 // 5. Output projection: y = x @ W_o^T  (no bias; matches Qwen2 o_proj).
@@ -875,8 +934,8 @@ torch::Tensor o_proj_forward(torch::Tensor x, torch::Tensor W_o) {
                 "o_proj: W_o inner dim must equal x hidden dim");
 
     const int64_t M = x.size(0);          // rows of X and Y (batch * seq_len)
-    const int64_t K = x.size(1);          // H_q (3584 for Qwen2.5-7B)
-    const int64_t N = W_o.size(0);        // H   (3584 for Qwen2.5-7B)
+    const int64_t K = x.size(1);          // H_q (14*64 = 896 for Qwen2.5-0.5B)
+    const int64_t N = W_o.size(0);        // H   (896 for Qwen2.5-0.5B)
 
     // No bias on o_proj (Qwen2 sets bias=False), so beta=0 and y is left
     // uninitialized — the GEMM overwrites it.

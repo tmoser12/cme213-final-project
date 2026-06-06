@@ -8,8 +8,8 @@ Two ops share this dir, so this file checks and times both:
     bias=False) (what Qwen2ForCausalLM.lm_head is); cuBLAS fp32-accum vs torch's
     GEMM agree to a small tolerance.
 
-    bash src/target/kernels/residual_ops/run_benchmark.sh             # this file
-    bash src/target/kernels/residual_ops/run_benchmark.sh --profile   # + nsys/ncu
+    bash src/draft/kernels/residual_ops/run_benchmark.sh             # this file
+    bash src/draft/kernels/residual_ops/run_benchmark.sh --profile   # + nsys/ncu
 """
 
 import argparse
@@ -17,15 +17,15 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 
-from src.target.kernels.residual_ops.wrapper import custom_ops, CustomQwenLMHead
+from src.draft.kernels.residual_ops.wrapper import custom_ops, CustomQwenLMHead
 
-# Qwen2.5-7B-Instruct dims.
-HIDDEN_SIZE = 3584
-VOCAB_SIZE = 152064
+# Qwen2.5-0.5B-Instruct dims.
+HIDDEN_SIZE = 896
+VOCAB_SIZE = 151936
 
 # Row counts (M = batch*seq). Decode is M=1; the rest are prefill/verify-ish.
 ADD_CONFIGS = [1, 128, 256, 1024, 8192, 16384]
-# The lm_head GEMM writes [M, 152064] -- keep M modest so the sweep is tractable.
+# The lm_head GEMM writes [M, 151936] -- keep M modest so the sweep is tractable.
 LMHEAD_CONFIGS = [1, 5, 128, 512, 2048]
 
 
@@ -139,7 +139,7 @@ def main():
     for M, e, c, cu in add_rows:
         report += f"{M:<8} | {e:<12.2f} | {c:<14.2f} | {cu:<12.2f} | {e / cu:<7.2f}x\n"
 
-    report += "\nlm_head  (logits = hidden @ weight^T, [M,3584]@[152064,3584])\n"
+    report += "\nlm_head  (logits = hidden @ weight^T, [M,896]@[151936,896])\n"
     report += f"{'M':<8} | {'Eager (us)':<12} | {'Compiled (us)':<14} | {'Custom (us)':<12} | {'Eager x':<8}\n"
     report += "-" * 78 + "\n"
     for M, e, c, cu in lm_rows:

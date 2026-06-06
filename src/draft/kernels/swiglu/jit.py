@@ -2,11 +2,11 @@
 JIT-compile and load the custom SwiGLU CUDA extension.
 
 First call compiles `kernel.cu` + `bindings.cpp` into a .so under
-~/.cache/torch_extensions/.../custom_swiglu_ops/. Subsequent calls
+~/.cache/torch_extensions/.../draft_swiglu_ops/. Subsequent calls
 reuse the cached build.
 
 If JIT picks up a stale build after editing the .cu, nuke the cache:
-    rm -rf ~/.cache/torch_extensions/*/custom_swiglu_ops
+    rm -rf ~/.cache/torch_extensions/*/draft_swiglu_ops
 """
 
 import os
@@ -48,7 +48,7 @@ def load_swiglu_ops():
     _sanitize_env_for_nvcc()
     d = Path(__file__).resolve().parent
     return load(
-        name="custom_swiglu_ops",
+        name="draft_swiglu_ops",
         sources=[d / "kernel.cu", d / "bindings.cpp"],
         extra_cuda_cflags=["-O3", "--use_fast_math", "-arch=sm_75"],
         verbose=True,

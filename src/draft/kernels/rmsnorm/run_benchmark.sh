@@ -7,18 +7,18 @@
 #   bash run_benchmark.sh --profile   # benchmark.py + nsys timeline + ncu metrics
 #
 # Profile outputs (timestamped, never overwrite):
-#   <project_root>/results/profiles/rmsnorm_<stamp>.{nsys-rep,ncu-rep}
+#   <project_root>/results/profiles/<model>/misc/rmsnorm_<stamp>.{nsys-rep,ncu-rep}
 
 set -euo pipefail
 
 _SCRIPT="${BASH_SOURCE[0]}"
 _KERNEL_PARENT="$(cd "$(dirname "$_SCRIPT")" && pwd)"
-cd "$_KERNEL_PARENT/../../.."
+cd "$_KERNEL_PARENT/../../../.."
 source setup.sh
 
 KERNEL_DIR=$(basename "$_KERNEL_PARENT")            # "rmsnorm"
 KERNEL_REGEX="rmsnorm_forward_kernel_vectorized"    # matches kernel.cu
-MODULE="src.kernels.${KERNEL_DIR}.benchmark"
+MODULE="src.draft.kernels.${KERNEL_DIR}.benchmark"
 
 PROFILE=false
 for arg in "$@"; do
@@ -31,8 +31,8 @@ done
 echo "=========================================================="
 echo "    $KERNEL_DIR   (profile=$PROFILE)"
 echo "=========================================================="
-echo "[setup] Clearing PyTorch JIT cache for custom_${KERNEL_DIR}_ops..."
-rm -rf ~/.cache/torch_extensions/py311_cu121/custom_${KERNEL_DIR}_ops
+echo "[setup] Clearing PyTorch JIT cache for draft_${KERNEL_DIR}_ops..."
+rm -rf ~/.cache/torch_extensions/py311_cu121/draft_${KERNEL_DIR}_ops
 
 if [ "$PROFILE" = false ]; then
     echo "[run] srun python -m $MODULE"
@@ -43,7 +43,18 @@ fi
 # ---- Profile path ----------------------------------------------------------
 export TMPDIR="$HOME/tmp"
 mkdir -p "$TMPDIR"
-OUT_DIR="$PROJECT_ROOT/results/profiles"
+# Route profiles into results/profiles/<model>/<group>/ (model from path, group from kernel).
+case "$_KERNEL_PARENT" in
+    */src/draft/*)  MODEL=draft ;;
+    */src/target/*) MODEL=target ;;
+    *)              MODEL=unknown ;;
+esac
+case "$KERNEL_DIR" in
+    swiglu)    GROUP=swiglu ;;
+    attention) GROUP=attention ;;
+    *)         GROUP=misc ;;
+esac
+OUT_DIR="$PROJECT_ROOT/results/profiles/$MODEL/$GROUP"
 mkdir -p "$OUT_DIR"
 STAMP=$(date +%Y%m%d_%H%M%S)
 OUT_BASE="$OUT_DIR/${KERNEL_DIR}_${STAMP}"
