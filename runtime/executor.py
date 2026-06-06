@@ -157,41 +157,47 @@ class Qwen2Executor:
         buf = self.buffers
         ops = self._ops["attn"]
         batch = buf.batch
-        nh = cfg.num_attention_heads
-        nkv = cfg.num_key_value_heads
-        d = cfg.head_dim
-        hq = cfg.hidden_size
-        hkv = cfg.kv_dim
+        nh = cfg.num_attention_heads # 28
+        nkv = cfg.num_key_value_heads # 4
+        d = cfg.head_dim # 128
+        hq = cfg.hidden_size # q_heads * head_dim = 28 * 128 = 3584
+        hkv = cfg.kv_dim # kv_heads * head_dim = 4 * 128 = 512
 
-        flat = x.reshape(batch * seq_len, cfg.hidden_size)
+        flat = x.reshape(batch * seq_len, cfg.hidden_size)  # [B*S, hq]
+        # qkv fused projection: [B*S, hq] -> [B*S, hq + 2*hkv]  (3584 + 2*512 = 4608)
         qkv = ops.qkv_proj_forward(flat, self._qkv_weights[layer], self._qkv_bias[layer])
 
-        q = qkv[:, :hq].reshape(batch, seq_len, nh, d).transpose(1, 2).contiguous()
-        k = qkv[:, hq : hq + hkv].reshape(batch, seq_len, nkv, d).transpose(1, 2).contiguous()
-        v = qkv[:, hq + hkv :].reshape(batch, seq_len, nkv, d).transpose(1, 2).contiguous()
+        # split + reshape to per-head layout [B, heads, S, d]
+        q = qkv[:, :hq].reshape(batch, seq_len, nh, d).transpose(1, 2).contiguous()  # [B, nh=28, S, d=128]
+        k = qkv[:, hq : hq + hkv].reshape(batch, seq_len, nkv, d).transpose(1, 2).contiguous()  # [B, nkv=4, S, d=128]
+        v = qkv[:, hq + hkv :].reshape(batch, seq_len, nkv, d).transpose(1, 2).contiguous()  # [B, nkv=4, S, d=128]
 
-        cache_k = buf.kv_cache_k_layer(layer)
-        cache_v = buf.kv_cache_v_layer(layer)
+        cache_k = buf.kv_cache_k_layer(layer)  # [B, nkv=4, max_seq, d=128]
+        cache_v = buf.kv_cache_v_layer(layer)  # [B, nkv=4, max_seq, d=128]
         write_pos = self._cache_pos
-        cos, sin = buf.rope_embeddings(write_pos, seq_len)
+        cos, sin = buf.rope_embeddings(write_pos, seq_len)  # cos/sin: [B, S, d=128]
 
+        # rope-rotates k, then writes k,v into cache at [.., write_pos:write_pos+S, ..] (in place)
         ops.rope_kv_write_forward(k, v, cache_k, cache_v, write_pos, cos, sin)
 
         if decode:
-            cur_len = write_pos + seq_len
+            cur_len = write_pos + seq_len  # full context length incl. cached tokens
+            # q [B, nh, S, d] attends over cache[:cur_len] -> ctx [B, nh, S, d=128]
             attn_ctx = ops.decode_attn_forward(
                 q, cache_k, cache_v, cur_len, self._softmax_scale, cos, sin
             )
         else:
-            cur_len = seq_len
+            cur_len = seq_len  # prefill: context == current sequence
+            # q [B, nh, S, d] causal attn over cache[:cur_len] -> ctx [B, nh, S, d=128]
             attn_ctx = ops.fused_attn_forward(
                 q, cache_k, cache_v, cur_len, self._softmax_scale, cos, sin
             )
 
         w_o = self.weights[f"model.layers.{layer}.self_attn.o_proj.weight"]
+        # back to token-major and flatten heads: [B, nh, S, d] -> [B, S, nh, d] -> [B*S, hq=3584]
         flat_ctx = attn_ctx.transpose(1, 2).reshape(batch * seq_len, hq)
-        out = ops.o_proj_forward(flat_ctx, w_o)
-        return out.reshape(batch, seq_len, cfg.hidden_size)
+        out = ops.o_proj_forward(flat_ctx, w_o)  # [B*S, hq] -> [B*S, hq=3584]
+        return out.reshape(batch, seq_len, cfg.hidden_size)  # [B, S, hq=3584]
 
     def run_decoder_layer(
         self,
@@ -357,3 +363,4 @@ class Qwen2Executor:
                 last = torch.tensor([next_t], dtype=torch.int64, device=input_ids.device)
                 logits = self.decode_step(last)
         return torch.tensor([out], dtype=torch.int64, device=input_ids.device)
+
