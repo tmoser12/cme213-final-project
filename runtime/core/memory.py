@@ -32,9 +32,12 @@ def plan_memory(
         "logits": shapes.logits(batch, max_seq_len, cfg),
         "kv_cache_keys": shapes.kv_cache(batch, max_seq_len, cfg),
         "kv_cache_values": shapes.kv_cache(batch, max_seq_len, cfg),
+        "rope_cos": shapes.rope_table(max_seq_len, cfg),
+        "rope_sin": shapes.rope_table(max_seq_len, cfg),
     }
 
     buffer_bytes = {name: shapes.nbytes(shape, cfg) for name, shape in buffers.items()}
+    buffer_bytes["cache_position"] = shapes.cache_position_bytes()
     kv_bytes = buffer_bytes["kv_cache_keys"] + buffer_bytes["kv_cache_values"]
     activation_bytes = sum(v for k, v in buffer_bytes.items() if not k.startswith("kv_cache"))
     weight_bytes = shapes.total_weight_bytes(cfg)
@@ -58,7 +61,9 @@ def plan_memory(
 
 def runtime_bytes_per_seq(cfg: RuntimeConfig, batch: int = 1) -> int:
     """Bytes for activations + KV cache per unit of max_seq_len (linear in seq)."""
-    return plan_memory(cfg, batch=batch, max_seq_len=1)["runtime_bytes"]
+    plan = plan_memory(cfg, batch=batch, max_seq_len=1)
+    # cache_position is a fixed int64 scalar — exclude from per-seq slope
+    return plan["runtime_bytes"] - shapes.cache_position_bytes()
 
 
 def max_seq_len_for_budget(

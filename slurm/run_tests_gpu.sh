@@ -5,17 +5,25 @@
 # Usage (from project root):
 #   bash slurm/run_tests_gpu.sh
 #   bash slurm/run_tests_gpu.sh runtime.tests.test_weights.TestGpuLoad7B
-#   bash slurm/run_tests_gpu.sh runtime.tests.test_rmsnorm
+#   bash slurm/run_tests_gpu.sh runtime.tests.test_decoder_layer   # Phase 6 layer parity
+#   bash slurm/run_tests_gpu.sh runtime.tests.test_parity_greedy  # Phase 6 greedy trajectory
 
 set -e
 cd "$(dirname "$0")/.." || exit
 
-# Default: canonical 7B-only GPU load + VRAM budget (single model per GPU)
-TARGET="${1:-runtime.tests.test_weights.TestGpuLoad7B}"
+# Default: CPU setup tests (also runnable on GPU nodes)
+TARGET="${1:-}"
 CONDA_PATH="/opt/ohpc/pub/compiler/anaconda3/2023.09-0"
 export PROJECT_ROOT="$(pwd)"
 
-echo "Running GPU tests: $TARGET"
+if [ -n "$TARGET" ]; then
+  TEST_CMD="'$CONDA_PATH/bin/conda' run -n cme213 python -m unittest '$TARGET' -v"
+  echo "Running GPU tests: $TARGET"
+else
+  TEST_CMD="'$CONDA_PATH/bin/conda' run -n cme213 python -m unittest runtime.tests.test_config runtime.tests.test_memory runtime.tests.test_engine_setup -v"
+  echo "Running setup tests: runtime/tests (config, memory, engine_setup)"
+fi
+
 PYTHONNOUSERSITE=1 srun \
     --partition=gpu-turing \
     --gres=gpu:1 \
@@ -26,5 +34,5 @@ PYTHONNOUSERSITE=1 srun \
         module load gnu12/12.3.0
         export PROJECT_ROOT='$PROJECT_ROOT'
         export PYTHONNOUSERSITE=1
-        '$CONDA_PATH/bin/conda' run -n cme213 python -m unittest '$TARGET' -v
+        $TEST_CMD
     "

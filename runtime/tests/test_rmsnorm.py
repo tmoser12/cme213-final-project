@@ -1,5 +1,6 @@
-"""Tests for production RMSNorm kernel integration (Phase 3)."""
+"""Tests for target RMSNorm AOT kernel integration (Phase 3)."""
 
+import importlib
 import os
 import unittest
 
@@ -7,14 +8,23 @@ import torch
 from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm
 
 from runtime.core.config import CONFIG_05B, CONFIG_7B, RuntimeConfig
-from runtime.production_kernels.rmsnorm import forward, init, workspace_bytes
 from runtime.core.weights import load_weights
+from runtime.production_kernels.target.rmsnorm import forward, init, workspace_bytes
+from runtime.production_kernels.target.rmsnorm.ops import EXTENSION_MODULE
 
 PROJECT_ROOT = os.environ.get(
     "PROJECT_ROOT", "/home/cme213/tobiascm/cme213-final-project"
 )
 REQUIRES_GPU = not torch.cuda.is_available()
 GPU_SKIP = "CUDA not available — run via slurm/run_tests_gpu.sh"
+
+
+class TestRmsnormAot(unittest.TestCase):
+    def test_prebuilt_extension_importable(self) -> None:
+        ext = importlib.import_module(EXTENSION_MODULE)
+        self.assertTrue(hasattr(ext, "forward"))
+        self.assertNotIn("torch_extensions", ext.__file__)
+        self.assertIn("production_kernels/target/rmsnorm", ext.__file__.replace("\\", "/"))
 
 
 class TestRmsnormInterface(unittest.TestCase):

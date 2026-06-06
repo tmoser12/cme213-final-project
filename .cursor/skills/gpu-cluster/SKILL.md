@@ -50,7 +50,14 @@ cd /home/cme213/tobiascm/cme213-final-project && source setup.sh && srun --parti
 | Default job time | 30 minutes |
 | **Max job time** | **30 minutes** (`MaxTime=00:30:00`) |
 
-Jobs requesting more than 30 minutes will be rejected (`PartitionTimeLimit`). Plan benchmarks and training runs accordingly; use shorter trials or checkpoint/resume patterns if needed.
+Jobs requesting more than 30 minutes will be rejected (`PartitionTimeLimit`). SLURM may **silently cap** over-long `--time` requests to 30 min rather than reject the job — the job still dies at 30 minutes wall clock.
+
+**Practical implications (observed on this project):**
+
+- Do **not** request `--time=00:45:00` or higher — it cannot extend the partition max.
+- Prefer **targeted test modules** over one giant unittest sweep in a single job.
+- Load large models **once** per job (`setUpClass`), not per test method — repeated 7B loads can burn most of the 30-minute window before any assertions run.
+- For iterative debugging, use `bash slurm/interactive.sh` and re-request when the shell expires.
 
 Access is restricted to groups `hpcc` and `cme213`.
 
@@ -79,6 +86,22 @@ bash slurm/run_python.sh --gpus 2 --time 00:15:00 scripts/my_script.py --flag va
 ```
 
 Wrapper options (before Python args): `--gpus N`, `--time HH:MM:SS`, `--mem SIZE`, `--cpus N`.
+
+### Recommended: `slurm/run_tests_gpu.sh` for runtime tests
+
+Runs `runtime/tests/` on a GPU node with correct partition flags and `PYTHONNOUSERSITE=1`:
+
+```bash
+# Default: CPU-safe setup tests (config, memory, engine_setup)
+bash slurm/run_tests_gpu.sh
+
+# Single test class or module (preferred — stays well under 30 min)
+bash slurm/run_tests_gpu.sh runtime.tests.test_executor.TestExecutorGpu
+bash slurm/run_tests_gpu.sh runtime.tests.test_rmsnorm
+bash slurm/run_tests_gpu.sh runtime.tests.test_attention
+```
+
+The wrapper always sets `--time=00:30:00` (partition max). Pass a **specific** target when running parity or executor tests.
 
 ### One-off `srun` (manual)
 
@@ -272,6 +295,37 @@ All `gpu-turing` nodes have **NVIDIA Quadro RTX 6000** GPUs.
 
 For full hardware details, see [gpu-spec.md](gpu-spec.md) or `info/gpu_spec.md`.
 
+### VRAM: one model copy on GPU (24 GB Turing)
+
+**Do not load two full 7B weight copies on the same GPU.** Observed failure mode:
+
+```
+load_weights(cfg, device="cuda")          # ~14 GB safetensors on GPU
++ AutoModelForCausalLM.from_pretrained(...)  # ~14 GB HF model on GPU
+→ torch.OutOfMemoryError (~22 GB allocated, ~118 MiB free)
+```
+
+**Pattern for executor / HF parity tests** (`runtime/tests/test_executor.py`):
+
+1. Load **one** `AutoModelForCausalLM` in `setUpClass`.
+2. Build the executor weight dict from `model.state_dict()` via `expected_keys(cfg)` — same tensor names as `load_weights()`, zero extra copy.
+3. Allocate buffers after the model is resident.
+
+With this pattern, full executor parity (prefill + decode + greedy argmax) completes in **~14 s** on `gpu-turing` after the initial shard load (~9 s).
+
+Production inference should use `load_weights()` alone (single copy). Parity tests share HF's copy only to save VRAM.
+
+### Runtime test pitfalls (CUDA + parity)
+
+| Issue | Symptom | Fix |
+|-------|---------|-----|
+| `cuda` vs `cuda:0` | `ValueError: input_ids on cuda:0, expected cuda` | Compare device **type + index**, not raw `torch.device` equality (`allocate_buffers(..., device="cuda")` vs tensors on `cuda:0`). Executor uses `_same_device()`. |
+| HF fp32 logits vs kernel fp16 | `RuntimeError: Float did not match Half` in `torch.allclose` | Cast both sides to `.float()` before compare, or cast HF logits to `torch.float16`. |
+| Duplicate model loads | Job hits 30 min limit mid-test | Single `setUpClass` load; run targeted `run_tests_gpu.sh <module>`. |
+| User-site torch on login node | Import / CUDA errors when testing locally | Always `PYTHONNOUSERSITE=1` and `conda run -n cme213` (wrapper sets this). |
+
+**Login node:** CPU-only structure tests are fine (`TestExecutorStructure`). Anything needing CUDA must go through `srun` / `run_tests_gpu.sh`.
+
 ---
 
 ## Environment Modules
@@ -297,9 +351,12 @@ Before running code for the user:
 - [ ] Ran `source setup.sh` in the current shell session (or used `slurm/run_python.sh` which does this)
 - [ ] GPU work goes through `srun` or `sbatch`, not bare login-node execution
 - [ ] Prefer `bash slurm/run_python.sh <args>` for general Python execution
+- [ ] Prefer `bash slurm/run_tests_gpu.sh <module>` for runtime/tests GPU work
 - [ ] Using `--partition=gpu-turing` and `--gres=gpu:N`
-- [ ] Job time ≤ 30 minutes
+- [ ] Job time ≤ 30 minutes (do not request more — partition caps at 30 min)
+- [ ] 7B parity tests: one GPU weight copy only (HF model OR safetensors, not both)
 - [ ] CUDA code targets sm_75 / FP16
+- [ ] `PYTHONNOUSERSITE=1` when invoking conda Python
 ```
 
 After editing `.cu` or `bindings.cpp`, clear the JIT cache before re-benchmarking:

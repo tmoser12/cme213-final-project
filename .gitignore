@@ -10,3 +10,8 @@ env/
 venv/
 .env
 .venv/
+
+# AOT CUDA extension build artifacts
+build/
+*.egg-info/
+runtime/production_kernels/**/*.so

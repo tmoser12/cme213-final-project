@@ -28,8 +28,28 @@ def kv_cache(batch: int, max_seq: int, cfg: RuntimeConfig) -> tuple[int, int, in
         batch,
         cfg.num_key_value_heads,
         max_seq,
-        cfg.head_dim,
+        kv_cache_head_dim(cfg),
     )
+
+
+def kv_cache_head_dim(cfg: RuntimeConfig) -> int:
+    """
+    Head dim for KV cache rows, padded so each row is 16-byte aligned (Turing).
+
+    Qwen2.5 7B (D=128) and 0.5B (D=64) are already aligned for fp16; padding only
+    applies if a future config uses an odd head_dim.
+    """
+    d = cfg.head_dim
+    row_bytes = d * cfg.dtype_bytes
+    if row_bytes % 16 == 0:
+        return d
+    elems_per_16 = 16 // cfg.dtype_bytes
+    return ((d + elems_per_16 - 1) // elems_per_16) * elems_per_16
+
+
+def rope_table(max_seq: int, cfg: RuntimeConfig) -> tuple[int, int]:
+    """Precomputed RoPE cos/sin table: [max_seq, head_dim]."""
+    return (max_seq, cfg.head_dim)
 
 
 def numel(shape: tuple[int, ...]) -> int:
@@ -41,6 +61,11 @@ def numel(shape: tuple[int, ...]) -> int:
 
 def nbytes(shape: tuple[int, ...], cfg: RuntimeConfig) -> int:
     return numel(shape) * cfg.dtype_bytes
+
+
+def cache_position_bytes() -> int:
+    """Device scalar int64 sequence cursor (fixed size, does not scale with seq)."""
+    return 8
 
 
 def weight_shapes(cfg: RuntimeConfig) -> dict[str, tuple[int, ...]]:

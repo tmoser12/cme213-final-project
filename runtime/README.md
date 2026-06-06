@@ -73,23 +73,39 @@ Pass either bundled config path or your own YAML — same code works for 7B and 
 
 ## Tests
 
+Setup tests (config, memory plan, engine-ready configuration) — run on CPU:
+
 ```bash
 source setup.sh
-python -m unittest discover -s runtime/tests -t . -v
+python -m unittest runtime.tests.test_config runtime.tests.test_memory runtime.tests.test_engine_setup -v
+```
+
+GPU kernel / weight tests:
+
+```bash
+bash slurm/run_tests_gpu.sh runtime.tests.test_weights.TestGpuLoad7B
 ```
 
 ## Production kernels (Phase 3)
 
-Kernels live in `runtime/production_kernels/`. Each folder contains only inference code (`kernel.cu`, `bindings.cpp`, `jit.py`, `ops.py`). Tests and benchmarks live in `runtime/tests/`.
+Kernels live under `runtime/production_kernels/target/<op>/`:
 
-```python
-from runtime.production_kernels.rmsnorm import forward, init
-
-init()  # JIT-compile CUDA extension once
-out = forward(input, weight, eps)  # [B,S,H], [H], float
+```
+kernel.cu, bindings.cpp, ops.py, target_<op>_ops*.so   # built via scripts/build_kernels.sh
 ```
 
-Test: `bash slurm/run_tests_gpu.sh runtime.tests.test_rmsnorm`
+Build once, then run GPU parity tests in `runtime/tests/`:
+
+```bash
+bash scripts/build_kernels.sh              # all ops, or: bash scripts/build_kernels.sh rmsnorm
+bash slurm/run_tests_gpu.sh runtime.tests.test_rmsnorm
+```
+
+```python
+from runtime.production_kernels.target.rmsnorm import forward
+
+out = forward(input, weight, eps)  # AOT extension — no runtime compile
+```
 
 ## Next steps
 

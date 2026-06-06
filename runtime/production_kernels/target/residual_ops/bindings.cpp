@@ -1,0 +1,24 @@
+// pybind11 module exposing the residual-add and LM-head launchers to Python.
+
+#include <torch/extension.h>
+
+torch::Tensor residual_add_forward(torch::Tensor a, torch::Tensor b);
+torch::Tensor lm_head_forward(torch::Tensor hidden, torch::Tensor weight);
+
+torch::Tensor residual_add_forward_py(const torch::Tensor& a, const torch::Tensor& b) {
+    py::gil_scoped_release release;
+    return residual_add_forward(a, b);
+}
+
+torch::Tensor lm_head_forward_py(const torch::Tensor& hidden,
+                                 const torch::Tensor& weight) {
+    py::gil_scoped_release release;
+    return lm_head_forward(hidden, weight);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("residual_add_forward", &residual_add_forward_py,
+          "Elementwise residual add: out = a + b (fp16, vectorized)");
+    m.def("lm_head_forward", &lm_head_forward_py,
+          "LM head projection: logits = hidden @ weight^T (cuBLAS, fp16)");
+}

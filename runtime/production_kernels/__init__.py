@@ -1,1 +1,1 @@
-"""Production CUDA kernels for the inference runtime."""
+"""Production CUDA kernels grouped by model role (target, draft)."""
