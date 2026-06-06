@@ -2,8 +2,9 @@
 name: Qwen2 Python Host + CUDA Kernels
 overview: >-
   Python inference host (config, buffers, executor) calling pre-built C++/CUDA kernel
-  extensions via thin ops.py wrappers. Phases 1–6 complete (through staged HF parity on 7B).
-  Next: kernel_set YAML, README refresh, Phase 7 CUDA graphs + perf.
+  extensions via thin ops.py wrappers. Phases 1–6 complete (HF parity on 7B).
+  Phase 8 (speculative decoding): 7B target + 0.5B draft on separate GPUs via mpi4py.
+  Next: Phase 8a target verify API, then MPI, CUDA graphs, draft kernels.
 todos:
   - id: yaml-config-and-shapes
     content: Per-model YAML configs + RuntimeConfig loader + shape/memory helpers.
@@ -33,7 +34,22 @@ todos:
     content: Update runtime/README.md — Python host, AOT build, target/draft kernel layout.
     status: pending
   - id: cuda-graphs-decode
-    content: "Phase 7: CUDA Graph capture/replay for decode_step (optional flag after parity)."
+    content: "Phase 7/8b: CUDA Graph capture/replay for decode_step + fixed-γ verify_gamma (after eager spec path)."
+    status: pending
+  - id: spec-target-verify
+    content: "Phase 8a: ForwardMode (PREFILL/VERIFY/DECODE), verify_gamma (small_q_attn), rollback_cache, p1_logits."
+    status: pending
+  - id: spec-host-sampler
+    content: "Phase 8a: runtime/speculative/sampler.py — stochastic accept/reject per documentation/speculative_decoding.md."
+    status: pending
+  - id: spec-target-step
+    content: "Phase 8a: target_step.py orchestrator + test_speculative_target.py."
+    status: pending
+  - id: spec-mpi
+    content: "Phase 8c: mpi4py coordinator + slurm/run_speculative.sh (2 ranks, 1 GPU each)."
+    status: pending
+  - id: spec-draft
+    content: "Phase 8d: Draft Qwen2Executor (kernel_set=draft) + γ-loop when production_kernels/draft/ lands."
     status: pending
 ---
 
@@ -96,6 +112,11 @@ runtime/
 ├── core/                              # config, shapes, memory, weights (done)
 ├── buffers.py                         # Phase 4 — device buffer allocation ✅
 ├── executor.py                        # Phase 5 — decoder + model loop ✅
+├── speculative/                       # Phase 8 — spec decode (sampler, MPI, orchestrator)
+│   ├── sampler.py                     # host accept/reject + resample (CPU)
+│   ├── target_step.py                 # target verify → sample → commit
+│   ├── types.py                       # SpeculativeStepResult, wire format
+│   └── mpi_coordinator.py             # mpi4py two-rank loop (Phase 8c)
 ├── production_kernels/
 │   ├── target/                        # target (main) model kernels — KEEP HERE
 │   │   ├── rmsnorm/
@@ -158,6 +179,7 @@ bash slurm/run_tests_gpu.sh runtime.tests.test_executor.TestExecutorGpu
 ## What We Anchor To
 
 - Reference forward order: `src/reference/modeling_qwen2.py`
+- Reference algorithm: `documentation/speculative_decoding.md`
 - Layer order in YAML: `input_rmsnorm → attention → residual_add → post_attn_rmsnorm → swiglu_mlp → residual_add`
 - Target kernels: `runtime/production_kernels/target/` (all ops complete)
 - GPU cluster: `.cursor/skills/gpu-cluster/` (SLURM, setup.sh, Turing FP16)
@@ -196,7 +218,8 @@ Build output lands beside the kernel sources, e.g. `runtime/production_kernels/t
 | 4 Buffers | ✅ | `buffers.py`, `test_buffers.py` (10/10) |
 | 5 Executor | ✅ | `executor.py` (`prefill`, `decode_step`, `greedy_extend`, `run_decoder_layer`) |
 | 6 Parity harness | ✅ (7B) | `parity_support.py`, `test_decoder_layer.py`, `test_parity_greedy.py`, `test_executor.py` |
-| 7 Perf + CUDA graphs | 🔲 | Next |
+| 7 Perf + CUDA graphs | 🔲 | Timing / tokens/sec baseline; graph decode (folded into 8b for verify) |
+| 8 Speculative decoding | 🔲 | 7B target + 0.5B draft, mpi4py, two GPUs — see Phase 8 below |
 
 **Target kernels** (`runtime/production_kernels/target/`):
 
@@ -217,11 +240,11 @@ bash slurm/run_tests_gpu.sh runtime.tests.test_executor.TestExecutorGpu
 ```
 
 **Still open:**
-- `kernel_set: target` in YAML + `RuntimeConfig` (executor hardcodes `target` today)
-- `runtime/README.md` refresh (buffers, executor, parity tests, AOT layout)
-- 0.5B full parity blocked until attention kernels support `head_dim=64`
+- **Phase 8a** — target `verify_gamma` + host stochastic sampler (can start now; mock draft payloads)
+- `kernel_set: target` in YAML + `RuntimeConfig` (needed for Phase 8d draft)
+- `runtime/README.md` refresh (buffers, executor, parity tests, spec decode, AOT layout)
+- 0.5B draft blocked until `production_kernels/draft/` attention kernels (`head_dim=64`)
 - Turing alignment validation in `RuntimeConfig.validate()` (Phase 1 checkbox)
-- Phase 7: CUDA Graph decode capture
 
 Legacy `src/kernels/rmsnorm/` and per-op `jit.py` / `wrapper.py` / `benchmark.py` are removed; use AOT + `runtime/tests/` only.
 
@@ -246,7 +269,7 @@ def workspace_bytes(...) -> int: ...   # 0 if none; optional helper
 
 No `init()` required if extensions are prebuilt — import is sufficient. Keep `init()` only if lazy validation or one-time setup is needed.
 
-**Attention is multi-op** — `ops.py` exposes the sub-ops in `target/attention/bindings.cpp`: `qkv_proj_forward`, `rope_forward`, `kv_write_forward`, `fused_attn_forward` (prefill), `decode_attn_forward` (decode), `o_proj_forward`. The Python executor composes these; no monolithic `forward()`.
+**Attention is multi-op** — `ops.py` exposes the sub-ops in `target/attention/bindings.cpp`: `qkv_proj_forward`, `rope_kv_write_forward`, `fused_attn_forward` (prefill), `decode_attn_forward` (decode S=1), `small_q_attn_forward` (verify S∈[2,8]), `o_proj_forward`. The Python executor composes these; no monolithic `forward()`.
 
 **Executor import pattern:**
 
@@ -353,6 +376,146 @@ Shared helpers in `runtime/tests/parity_support.py` (`load_hf_and_executor`, `ca
 - Compare logits/hidden in `.float()` (HF fp32 vs kernel fp16)
 - Greedy: first new token from **prefill logits**; only later tokens use `decode_step`
 
+### Phase 8: Speculative decoding — **pending**
+
+**Goal:** Accelerate 7B (target) inference using 0.5B (draft) on a **second GPU**, coordinated via **mpi4py**. Algorithm: [documentation/speculative_decoding.md](../documentation/speculative_decoding.md). Partner owns `production_kernels/draft/` kernels; **target-side work can start now** with mock draft payloads.
+
+**Topology:** Rank 0 → 7B target on GPU 0; Rank 1 → 0.5B draft on GPU 1 (`srun --ntasks=2 --gres=gpu:1`). One model copy per GPU (no OOM).
+
+**Design decisions (agreed + corrections):**
+
+| Topic | Decision |
+|-------|----------|
+| Target logits for verify | Need **γ+1** distributions `p_1…p_{γ+1}`: `p_1` = last prefill logit; `verify_gamma` returns `[B, γ, vocab]` = `p_2…p_{γ+1}` |
+| Verify attention | Use **`small_q_attn_forward`** (S∈[2,8], **γ≤7**), not `fused_attn_forward`, after cached prefill |
+| Cache rollback | Set `_cache_pos` / device scalar to `prefix_len + n`; stale KV in rejected slots is **logically dead** (optional zero for debug) |
+| Sampling | **Stochastic** accept/reject on **CPU** (D2H target logits, softmax); no sampling in CUDA kernels |
+| Forward modes | **Three explicit stages** — do not conflate VERIFY (S=γ) with DECODE (S=1); see below |
+| Module layout | Extend `executor.py` for forward ops; add `runtime/speculative/` for sampler, orchestrator, MPI |
+| CUDA graphs | **Primary:** fixed-γ `verify_gamma`. **Secondary:** S=1 commit (`decode_step`). **Optional:** prefill (variable len, bucket if needed). **Never graph:** sampling, MPI, rollback |
+| Execution order | **8a** eager verify + sampler → **8c** MPI → **8b** CUDA graphs → **8d** draft kernels |
+
+#### Three forward stages (not just prefill vs decode)
+
+The executor today uses a boolean `decode` flag; speculative decoding needs a **third, explicitly labeled stage**. Do not treat `verify_gamma` as “decode with a longer seq len” — it is a **verification forward** with different attention semantics and cache behavior.
+
+| Stage | `ForwardMode` | Query len S | Attention kernel | KV / cache | Public API |
+|-------|---------------|-------------|------------------|------------|------------|
+| Prefill | `PREFILL` | prompt len | `fused_attn_forward` | Reset KV; write `[0, S)` | `prefill(input_ids)` |
+| **Verify** | **`VERIFY`** | **γ (2–7)** | **`small_q_attn_forward`** | Warm cache at `write_pos = prefix_len`; `cur_len = prefix_len + γ`; **speculative** write (may rollback) | **`verify_gamma(draft_ids)`** |
+| Decode (commit) | `DECODE` | **1** | **`decode_attn_forward`** | Warm cache; commit accepted / bonus token(s) | `decode_step(token_id)` / `commit_tokens()` |
+
+Implementation: replace `decode: bool` in `_run_attention` / `_forward_stack` with `mode: ForwardMode`. Logs, tests, and CUDA graph capture keys should name the stage (`VERIFY`, not `decode=True`).
+
+```python
+class ForwardMode(Enum):
+    PREFILL = "prefill"   # fused_attn, reset KV
+    VERIFY = "verify"     # small_q_attn, S=γ, speculative KV write
+    DECODE = "decode"     # decode_attn, S=1, commit token
+```
+
+#### Host sampling and MPI (what crosses the wire)
+
+**All accept/reject/resample math runs on the target rank’s CPU** — not in CUDA kernels. Reasons:
+
+1. Algorithm needs RNG, ratio tests, and `norm(max(0, p − q))` (see spec doc).
+2. Draft `q` distributions must be on the target to compare against target `p`.
+
+**D2H on target is for local sampling, not because target logits are MPI’d back to draft:**
+
+| Direction | Payload | Where used |
+|-----------|---------|------------|
+| Draft → target (MPI) | `draft_token_ids[γ]`, `draft_logits[γ+1, vocab]` (fp16) | Target host compares `q` vs `p` |
+| Target GPU → target CPU (D2H) | `p_1…p_{γ+1}` after `prefill` + `verify_gamma` | Target host sampler only |
+| Target → draft (MPI) | `n_accepted`, `bonus_token`, `prefix_len` (tiny) | Draft rollback + append |
+
+Target never MPIs its full `p` matrix to the draft. Draft logits arrive via MPI already; target logits are copied to host for **local** stochastic verification. A GPU sampler would not remove the need for draft `q` on target — it would only avoid D2H of `p`, at the cost of a custom kernel we explicitly avoid.
+
+```mermaid
+sequenceDiagram
+    participant Draft as DraftRank_GPU1
+    participant MPI as MPI
+    participant Target as TargetRank_GPU0
+    participant Host as HostSampler_CPU
+
+    Note over Target: prefill prefix saves p1
+    par Overlap_optional
+        Target->>Target: prefill prefix
+    and
+        Draft->>Draft: gamma autoregressive steps
+    end
+    Draft->>MPI: draft_ids draft_logits
+    MPI->>Target: draft_ids
+    Target->>Target: verify_gamma -> p2 to p_gamma+1
+    Target->>Host: D2H p and q distributions
+    Host->>Host: accept reject resample
+    Host->>Target: n_accepted bonus_token
+    Target->>Target: rollback_cache commit
+    Target->>MPI: n_accepted bonus_token prefix_len
+    MPI->>Draft: sync rollback append
+```
+
+#### Phase 8a — Target verify API + host stochastic sampler — **pending**
+
+**Goal:** Target-only correctness without MPI; mock draft tokens/logits from HF 0.5B or saved tensors.
+
+**8a.1 Extend `Qwen2Executor` (target, 7B)** in `runtime/executor.py`:
+
+| Method | `ForwardMode` | Behavior |
+|--------|---------------|----------|
+| `prefill(input_ids)` | `PREFILL` | Existing; also store **`_p1_logits`** = `logits[:, -1, :]` |
+| **`verify_gamma(draft_token_ids)`** | **`VERIFY`** | `[B, γ]` on device; **`small_q_attn_forward`** (γ>1) or `decode_attn` (γ=1 edge case); speculative KV write; return `[B, γ, vocab]` = `p_2…p_{γ+1}`. **Not `decode_step`.** |
+| `rollback_cache(to_pos)` | — | `_cache_pos = to_pos`, `cache_position.fill_(to_pos)` (no KV zero required) |
+| `commit_tokens(...)` / `decode_step` | `DECODE` | S=1; commit bonus token after accept/reject |
+
+Refactor `_run_attention` on **`ForwardMode`**, not `decode: bool`:
+
+```python
+if mode == ForwardMode.PREFILL:
+    attn_ctx = fused_attn_forward(...)
+elif mode == ForwardMode.VERIFY:
+    attn_ctx = small_q_attn_forward(...)  # S=γ, cur_len = write_pos + γ
+else:  # ForwardMode.DECODE
+    attn_ctx = decode_attn_forward(...)    # S=1 only
+```
+
+**8a.2** `runtime/speculative/sampler.py` — steps 3–4 from spec doc (stochastic accept/reject, adjusted resample). Draft sends **γ+1 logit rows** (fp16) for rejection math.
+
+**8a.3** `runtime/speculative/target_step.py` — orchestrate verify → D2H → sample → rollback → commit.
+
+**8a.4** `runtime/tests/test_speculative_target.py` — verify logits vs HF; cache rollback; short stochastic trajectory (fixed seed).
+
+#### Phase 8b — CUDA graphs — **pending** (after 8c eager)
+
+Graph **GPU forward paths only** — never sampling, MPI, or cache rollback.
+
+| Priority | Graph captures | Rationale |
+|----------|----------------|-----------|
+| **Primary** | **`verify_gamma`** (`ForwardMode.VERIFY`, fixed γ) | Spec-decode hot loop; fixed shape; ~150 kernel launches per iteration |
+| **Secondary** | **`decode_step` / commit** (`ForwardMode.DECODE`, S=1) | One bonus token per iteration; still heavy Python launch overhead |
+| **Optional** | **`prefill`** (`ForwardMode.PREFILL`) | Runs once per prompt; variable length → bucketed graphs or stay eager |
+| **Never** | Host sampler, MPI, `rollback_cache` | CPU / control flow |
+
+Flag: `use_cuda_graph=True, graph_gamma=4` — capture **VERIFY** graph only when `len(draft_ids) == graph_gamma`. Implement after MPI eager path is parity-checked (Phase 8c).
+
+#### Phase 8c — MPI coordinator — **pending**
+
+- `runtime/speculative/mpi_coordinator.py` + `slurm/run_speculative.sh`
+- **Draft → target:** `draft_token_ids[γ]`, `draft_logits[γ+1, vocab]` (fp16)
+- **Target → draft:** `n_accepted`, `bonus_token`, `prefix_len`
+- **Overlap (later):** target prefill ∥ draft γ-generation; tune γ for latency balance
+
+#### Phase 8d — Draft executor + kernels — **pending** (partner)
+
+When `production_kernels/draft/` lands:
+
+- AOT build draft ops in `setup.py` / `build_kernels.sh` (`head_dim=64`)
+- `Qwen2Executor(kernel_set="draft")` — mirror target API: `prefill`, `decode_step`, γ sequential draft loop
+- Draft rollback: same `_cache_pos` rule after target returns `n_accepted`
+- Completes Phase 3c `kernel_set` YAML hook
+
+**Phase 8 risks:** γ+1 logit indexing bugs (explicit unit test); verify kernel must HF-parity before MPI; keep single-process `target_speculative_step` as golden path for debugging.
+
 ### Phase 7: Performance + profiling — **pending**
 
 Only after Phase 6 is stable:
@@ -361,19 +524,26 @@ Only after Phase 6 is stable:
 - Compare tokens/sec vs HF eager baseline on Turing (`gpu-turing`, batch=1)
 - Optional: lightweight profiler script in `runtime/tests/` (not in `production_kernels/`)
 
-**CUDA Graphs for decode (highest-impact optimization)**
+**CUDA Graphs (Phase 7 + 8b)**
 
-Python launch overhead is the biggest threat to this architecture. Each `decode_step()` runs ~30 layers × 5+ ops ≈ **150+ kernel launches from Python**, each incurring ~10–50µs pybind/interpret overhead — the GPU starves between tokens.
+Python launch overhead is the biggest threat to this architecture. Each GPU forward runs ~30 layers × 5+ ops ≈ **150+ kernel launches from Python**, each incurring ~10–50µs pybind/interpret overhead.
 
-Because Phase 4 uses static buffers (fixed addresses, no `torch.empty`), capture the full decode step once into a **CUDA Graph** and replay it for subsequent tokens. This bypasses the Python interpreter and pybind on the hot path, approaching C++-host launch latency. Requirements:
+Because Phase 4 uses static buffers (fixed addresses, no `torch.empty`), capture repeatable forwards into **CUDA Graphs** and replay:
 
-- Static tensor addresses and kernel arguments across decode steps ( satisfied by pre-allocated buffers)
-- `cache_position` updated on device (see Phase 4/5) — graph reads the device scalar; no host-side int passed per step
-- Input token id: write into a fixed device buffer slot before graph replay
-- Warmup: one eager `decode_step()` before capture; then `torch.cuda.graph()` capture + `graph.replay()` for generation
-- Prefill stays eager (variable seq len); graph applies to decode only
+- **Spec-decode:** graph **`ForwardMode.VERIFY`** (`verify_gamma`) first — highest ROI in the spec loop
+- **Commit:** graph **`ForwardMode.DECODE`** (`decode_step`) for bonus-token write
+- **Prefill:** optional / bucketed — lower ROI (once per prompt, variable length)
+- **Do not graph:** host sampling, MPI, rollback
 
-Implement in `executor.py` behind a flag (e.g. `use_cuda_graph=True`) once eager decode parity passes.
+Requirements:
+
+- Static tensor addresses and kernel arguments across replay steps
+- `cache_position` updated on device — graph reads device scalar; no host int per replay
+- Draft token ids: write into fixed device buffer slot(s) before VERIFY graph replay
+- Warmup: one eager forward per mode before capture; then `torch.cuda.graph()` + `replay()`
+- Label graph capture by **`ForwardMode`** (VERIFY ≠ DECODE)
+
+Implement behind `use_cuda_graph=True` once eager spec-decode parity passes (Phase 8a/8c).
 
 ## Cleanup
 
@@ -383,13 +553,15 @@ Implement in `executor.py` behind a flag (e.g. `use_cuda_graph=True`) once eager
 
 ## Deferred (add only when needed)
 
-- `production_kernels/draft/` — same layout as target when draft model kernels arrive
-- Multi-GPU / speculative decoding (will use target + draft kernel sets)
 - Pluggable execution policies / op registries
 - CMake unified build or LibTorch C++ host
 
+(Multi-GPU speculative decoding is **active** — Phase 8 above. Draft kernels: `production_kernels/draft/`.)
+
 ## Immediate Next Actions
 
-1. **Phase 7:** CUDA Graph decode capture behind `use_cuda_graph` flag; timing hooks / tokens/sec baseline
-2. **Phase 3c:** add `kernel_set: target` to YAML + `RuntimeConfig`; wire executor dynamic import
-3. **README:** update `runtime/README.md` with buffers, executor, parity tests, AOT build commands
+1. **Phase 8a:** `verify_gamma` + `rollback_cache` in `executor.py`; `runtime/speculative/sampler.py` + `target_step.py`; `test_speculative_target.py`
+2. **Phase 8c:** mpi4py coordinator + `slurm/run_speculative.sh` (mock draft first, then HF 0.5B on rank 1)
+3. **Phase 3c:** `kernel_set: target|draft` in YAML + `RuntimeConfig` (required before 8d)
+4. **Phase 8b / 7:** CUDA graphs for fixed-γ `verify_gamma` + `decode_step` after eager spec path works
+5. **README:** update `runtime/README.md` with spec decode layout and test commands
