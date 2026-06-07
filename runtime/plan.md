@@ -46,8 +46,8 @@ todos:
     content: "Phase 8a: target_step.py orchestrator + test_speculative_target.py."
     status: completed
   - id: spec-mpi
-    content: "Phase 8c: mpi4py coordinator + slurm/run_speculative.sh (2 ranks, 1 GPU each)."
-    status: pending
+    content: "Phase 8c: MPI coordinator (runtime/speculative/mpi_coordinator.py + mpi_protocol.py) + slurm/run_speculative.sh (2 ranks: 7B target cuda:0, 0.5B draft cuda:1). DONE — runs on 2 GPUs, draft+target committed sequences match."
+    status: completed
   - id: spec-draft
     content: "Phase 8d: Draft Qwen2Executor (kernel_set=draft) + DraftRunner γ-loop + draft CUDA graphs + single-process spec_decode. DONE — see draft_integration_plan.md (greedy spec == target greedy; end-to-end 1.18x)."
     status: completed

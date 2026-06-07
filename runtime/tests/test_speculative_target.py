@@ -234,7 +234,11 @@ class TestTargetSpeculativeStepGpu(unittest.TestCase):
 
 
 class TestNoMpiInPhase8a(unittest.TestCase):
-    """Sanity: Phase 8a modules must not import mpi4py."""
+    """Sanity: only the MPI coordinator may import mpi4py; the rest of the
+    speculative package stays importable without an MPI stack."""
+
+    # The coordinator is the single module allowed to touch mpi4py (lazily).
+    MPI_ALLOWED = {"runtime.speculative.mpi_coordinator"}
 
     def test_speculative_package_has_no_mpi_import(self) -> None:
         import importlib
@@ -242,6 +246,8 @@ class TestNoMpiInPhase8a(unittest.TestCase):
         import runtime.speculative as spec_pkg
 
         for mod_info in pkgutil.walk_packages(spec_pkg.__path__, spec_pkg.__name__ + "."):
+            if mod_info.name in self.MPI_ALLOWED:
+                continue
             mod = importlib.import_module(mod_info.name)
             source_path = getattr(mod, "__file__", "") or ""
             if source_path.endswith(".py"):

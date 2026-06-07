@@ -127,8 +127,14 @@ Status: ⬜ todo · 🟡 wip · ✅ done · 🔵 deprioritized
 ### Phase D7 — Docs & wrap-up ✅ DONE
 - ✅ `documentation/draft_graph_benchmarks.md` (draft 1.64×, end-to-end spec numbers + accept-rate
   caveat). Concept #5 (vocab alignment) in the issues journal. `runtime/plan.md` Phase 8d updated.
-- 🔵 D7.3 MPI 2-rank (Phase 8c) noted as the separate next step for cross-GPU (would overlap draft +
-  target instead of serializing them on one card).
+- ✅ D7.3 **MPI 2-rank coordinator (Phase 8c) DONE.** `runtime/speculative/mpi_protocol.py` (wire
+  format) + `mpi_coordinator.py` (rank 0 = 7B target on cuda:0, rank 1 = 0.5B draft on cuda:1; reuses
+  `target_speculative_step` + `DraftRunner`; mpi4py imported lazily) + `slurm/run_speculative.sh`
+  (one task, `mpirun -np 2`, `--gres=gpu:2`, NVHPC). Ran on 2 GPUs: **draft & target committed
+  sequences match** (16 iters, γ=4). `test_mpi_protocol` (wire roundtrip) green; `TestNoMpiInPhase8a`
+  extended to allowlist only the coordinator. Note: vanilla spec decode serializes draft↔target (the
+  next γ needs the bonus), so 2-GPU buys memory isolation + a dedicated graphed draft GPU, not deep
+  compute overlap.
 
 ---
 
