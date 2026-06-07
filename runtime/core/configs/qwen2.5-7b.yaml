@@ -22,6 +22,9 @@ dtype: fp16
 accum_dtype: fp32
 cuda_arch: sm_75
 
+# Which production_kernels/<role>/ suite the executor loads (head_dim 128, templated)
+kernel_set: target
+
 # Default inference limits (override at call time)
 max_batch: 1
 max_seq_len: 2048

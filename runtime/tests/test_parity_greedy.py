@@ -1,4 +1,7 @@
-"""Stage 4 parity: multi-token greedy decode trajectory vs HF (Phase 6)."""
+"""Stage 4 parity: multi-token greedy decode trajectory vs HF (Phase 6).
+
+Runs for both the 7B target and 0.5B draft model (config-driven executor).
+"""
 
 from __future__ import annotations
 
@@ -8,8 +11,10 @@ import torch
 
 from runtime.tests.parity_support import (
     GPU_SKIP,
+    HAS_05B_WEIGHTS,
     HAS_7B_WEIGHTS,
     REQUIRES_GPU,
+    default_05b_cfg,
     default_7b_cfg,
     greedy_decode_executor,
     greedy_decode_hf,
@@ -17,12 +22,12 @@ from runtime.tests.parity_support import (
 )
 
 
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-@unittest.skipUnless(HAS_7B_WEIGHTS, "7B weights not on disk")
-class TestGreedyDecodeTrajectory(unittest.TestCase):
+class _GreedyTrajectoryBase:
+    CFG_LOADER: staticmethod
+
     @classmethod
     def setUpClass(cls) -> None:
-        cls.cfg = default_7b_cfg()
+        cls.cfg = cls.CFG_LOADER()
         cls.hf, cls.executor = load_hf_and_executor(cls.cfg, max_seq_len=128)
 
     @classmethod
@@ -45,6 +50,18 @@ class TestGreedyDecodeTrajectory(unittest.TestCase):
 
     def test_sixteen_tokens_from_minimal_prompt(self) -> None:
         self._assert_trajectory([151643], n_new=16)
+
+
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+@unittest.skipUnless(HAS_7B_WEIGHTS, "7B weights not on disk")
+class TestGreedyDecodeTrajectory(_GreedyTrajectoryBase, unittest.TestCase):
+    CFG_LOADER = staticmethod(default_7b_cfg)
+
+
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+@unittest.skipUnless(HAS_05B_WEIGHTS, "0.5B weights not on disk")
+class TestGreedyDecode05BTrajectory(_GreedyTrajectoryBase, unittest.TestCase):
+    CFG_LOADER = staticmethod(default_05b_cfg)
 
 
 if __name__ == "__main__":

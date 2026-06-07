@@ -1,4 +1,7 @@
-"""Tests for target residual_ops AOT kernel integration (Phase 3)."""
+"""Tests for residual_ops AOT kernel integration (Phase 3).
+
+7B cases exercise the ``target`` suite; 0.5B cases exercise the ``draft`` suite.
+"""
 
 import importlib
 import os
@@ -14,6 +17,11 @@ from runtime.production_kernels.target.residual_ops import (
     residual_add_forward,
 )
 from runtime.production_kernels.target.residual_ops.ops import EXTENSION_MODULE
+from runtime.production_kernels.draft.residual_ops import (
+    lm_head_forward as draft_lm_head_forward,
+    residual_add_forward as draft_residual_add_forward,
+)
+from runtime.production_kernels.draft.residual_ops.ops import EXTENSION_MODULE as DRAFT_EXTENSION_MODULE
 
 PROJECT_ROOT = os.environ.get(
     "PROJECT_ROOT", "/home/cme213/tobiascm/cme213-final-project"
@@ -32,6 +40,15 @@ class TestResidualOpsAot(unittest.TestCase):
             "production_kernels/target/residual_ops", ext.__file__.replace("\\", "/")
         )
 
+    def test_draft_extension_importable(self) -> None:
+        ext = importlib.import_module(DRAFT_EXTENSION_MODULE)
+        self.assertTrue(hasattr(ext, "residual_add_forward"))
+        self.assertTrue(hasattr(ext, "lm_head_forward"))
+        self.assertNotIn("torch_extensions", ext.__file__)
+        self.assertIn(
+            "production_kernels/draft/residual_ops", ext.__file__.replace("\\", "/")
+        )
+
 
 @unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
 class TestResidualOpsGpu(unittest.TestCase):
@@ -44,19 +61,6 @@ class TestResidualOpsGpu(unittest.TestCase):
                 expected = a + b
                 actual = residual_add_forward(a, b)
             self.assertTrue(torch.equal(expected, actual), msg=f"rows={rows}")
-
-    def test_lm_head_matches_linear_05b(self) -> None:
-        cfg = RuntimeConfig.from_yaml(CONFIG_05B, project_root=PROJECT_ROOT)
-        head = nn.Linear(cfg.hidden_size, cfg.vocab_size, bias=False).cuda().half()
-        for batch, seq in [(1, 1), (2, 64)]:
-            hidden = torch.randn(batch, seq, cfg.hidden_size, dtype=torch.float16, device="cuda")
-            with torch.no_grad():
-                expected = head(hidden)
-                actual = lm_head_forward(hidden, head.weight)
-            self.assertTrue(
-                torch.allclose(expected, actual, atol=1e-2, rtol=1e-2),
-                msg=f"B={batch} S={seq}",
-            )
 
     @unittest.skipUnless(
         os.path.isfile(
@@ -73,6 +77,32 @@ class TestResidualOpsGpu(unittest.TestCase):
             expected = torch.nn.functional.linear(hidden, w)
             actual = lm_head_forward(hidden, w)
         self.assertTrue(torch.allclose(expected, actual, atol=1e-2, rtol=1e-2))
+
+
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+class TestResidualOpsDraftGpu(unittest.TestCase):
+    def test_residual_add_bit_exact_05b(self) -> None:
+        cfg = RuntimeConfig.from_yaml(CONFIG_05B, project_root=PROJECT_ROOT)
+        for rows in [1, 128, 512]:
+            a = torch.randn(rows, cfg.hidden_size, dtype=torch.float16, device="cuda")
+            b = torch.randn(rows, cfg.hidden_size, dtype=torch.float16, device="cuda")
+            with torch.no_grad():
+                expected = a + b
+                actual = draft_residual_add_forward(a, b)
+            self.assertTrue(torch.equal(expected, actual), msg=f"rows={rows}")
+
+    def test_lm_head_matches_linear_05b(self) -> None:
+        cfg = RuntimeConfig.from_yaml(CONFIG_05B, project_root=PROJECT_ROOT)
+        head = nn.Linear(cfg.hidden_size, cfg.vocab_size, bias=False).cuda().half()
+        for batch, seq in [(1, 1), (2, 64)]:
+            hidden = torch.randn(batch, seq, cfg.hidden_size, dtype=torch.float16, device="cuda")
+            with torch.no_grad():
+                expected = head(hidden)
+                actual = draft_lm_head_forward(hidden, head.weight)
+            self.assertTrue(
+                torch.allclose(expected, actual, atol=1e-2, rtol=1e-2),
+                msg=f"B={batch} S={seq}",
+            )
 
 
 if __name__ == "__main__":

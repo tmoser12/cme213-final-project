@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import importlib
 import math
 
 import torch
 
 from runtime.buffers import RuntimeBuffers
-from runtime.core.config import RuntimeConfig
+from runtime.core.config import KERNEL_SETS, RuntimeConfig
+from runtime.nvtx import rng
 
-_ATTN_HEAD_DIM = 128  # fused/decode attention kernels are templated on D=128 (7B)
+# Head dim each compiled attention suite is templated on (constexpr D in kernel.cu).
+# The literal lived in the executor before; it is a property of the kernel set,
+# keyed by cfg.kernel_set — not a model dim (cfg.head_dim is derived).
+_KERNEL_SET_HEAD_DIM = {"target": 128, "draft": 64}
 
 
 def _same_device(a: torch.device, b: torch.device) -> bool:
@@ -17,25 +22,24 @@ def _same_device(a: torch.device, b: torch.device) -> bool:
     return a.type == b.type and (a.index or 0) == (b.index or 0)
 
 
-def _import_kernels(kernel_set: str = "target"):
-    if kernel_set != "target":
-        raise ValueError(f"unsupported kernel_set: {kernel_set!r} (only 'target' is wired)")
-    from runtime.production_kernels.target.attention import ops as attn_ops
-    from runtime.production_kernels.target.embedding.ops import embedding_forward
-    from runtime.production_kernels.target.residual_ops.ops import (
-        lm_head_forward,
-        residual_add_forward,
-    )
-    from runtime.production_kernels.target.rmsnorm.ops import forward as rmsnorm_forward
-    from runtime.production_kernels.target.swiglu.ops import swiglu_forward
+def _import_kernels(kernel_set: str):
+    """Load the op callables for one kernel suite (``target`` or ``draft``)."""
+    if kernel_set not in KERNEL_SETS:
+        raise ValueError(f"unsupported kernel_set: {kernel_set!r} (expected one of {KERNEL_SETS})")
+    base = f"runtime.production_kernels.{kernel_set}"
+    attn_ops = importlib.import_module(f"{base}.attention").ops
+    embedding_forward = importlib.import_module(f"{base}.embedding.ops").embedding_forward
+    residual = importlib.import_module(f"{base}.residual_ops.ops")
+    rmsnorm_forward = importlib.import_module(f"{base}.rmsnorm.ops").forward
+    swiglu_forward = importlib.import_module(f"{base}.swiglu.ops").swiglu_forward
 
     return {
         "attn": attn_ops,
         "embedding_forward": embedding_forward,
         "rmsnorm_forward": rmsnorm_forward,
-        "residual_add_forward": residual_add_forward,
+        "residual_add_forward": residual.residual_add_forward,
         "swiglu_forward": swiglu_forward,
-        "lm_head_forward": lm_head_forward,
+        "lm_head_forward": residual.lm_head_forward,
     }
 
 
@@ -78,13 +82,20 @@ class Qwen2Executor:
         weights: dict[str, torch.Tensor],
         buffers: RuntimeBuffers,
         *,
-        kernel_set: str = "target",
+        kernel_set: str | None = None,
     ) -> None:
         cfg.validate()
-        if cfg.head_dim != _ATTN_HEAD_DIM:
+        # Default to the suite named by the config; kwarg is an explicit override.
+        resolved_set = kernel_set if kernel_set is not None else cfg.kernel_set
+        expected_d = _KERNEL_SET_HEAD_DIM.get(resolved_set)
+        if expected_d is None:
             raise ValueError(
-                f"attention kernels require head_dim={_ATTN_HEAD_DIM}; "
-                f"got {cfg.head_dim} ({cfg.name}). Use the 7B config."
+                f"unsupported kernel_set: {resolved_set!r} (expected one of {KERNEL_SETS})"
+            )
+        if cfg.head_dim != expected_d:
+            raise ValueError(
+                f"{resolved_set!r} attention kernels require head_dim={expected_d}; "
+                f"got {cfg.head_dim} ({cfg.name}). Check the config's kernel_set."
             )
         if buffers.cfg.name != cfg.name:
             raise ValueError("buffers were allocated for a different config")
@@ -92,9 +103,10 @@ class Qwen2Executor:
             raise ValueError("invalid buffer batch size")
 
         self.cfg = cfg
+        self.kernel_set = resolved_set
         self.weights = weights
         self.buffers = buffers
-        self._ops = _import_kernels(kernel_set)
+        self._ops = _import_kernels(resolved_set)
         self._softmax_scale = 1.0 / math.sqrt(cfg.head_dim)
         self._cache_pos = 0
 
@@ -165,7 +177,8 @@ class Qwen2Executor:
 
         flat = x.reshape(batch * seq_len, cfg.hidden_size)  # [B*S, hq]
         # qkv fused projection: [B*S, hq] -> [B*S, hq + 2*hkv]  (3584 + 2*512 = 4608)
-        qkv = ops.qkv_proj_forward(flat, self._qkv_weights[layer], self._qkv_bias[layer])
+        with rng("qkv_proj"):
+            qkv = ops.qkv_proj_forward(flat, self._qkv_weights[layer], self._qkv_bias[layer])
 
         # split + reshape to per-head layout [B, heads, S, d]
         q = qkv[:, :hq].reshape(batch, seq_len, nh, d).transpose(1, 2).contiguous()  # [B, nh=28, S, d=128]
@@ -178,25 +191,29 @@ class Qwen2Executor:
         cos, sin = buf.rope_embeddings(write_pos, seq_len)  # cos/sin: [B, S, d=128]
 
         # rope-rotates k, then writes k,v into cache at [.., write_pos:write_pos+S, ..] (in place)
-        ops.rope_kv_write_forward(k, v, cache_k, cache_v, write_pos, cos, sin)
+        with rng("rope_kv_write"):
+            ops.rope_kv_write_forward(k, v, cache_k, cache_v, write_pos, cos, sin)
 
         if decode:
             cur_len = write_pos + seq_len  # full context length incl. cached tokens
             # q [B, nh, S, d] attends over cache[:cur_len] -> ctx [B, nh, S, d=128]
-            attn_ctx = ops.decode_attn_forward(
-                q, cache_k, cache_v, cur_len, self._softmax_scale, cos, sin
-            )
+            with rng("decode_attn"):
+                attn_ctx = ops.decode_attn_forward(
+                    q, cache_k, cache_v, cur_len, self._softmax_scale, cos, sin
+                )
         else:
             cur_len = seq_len  # prefill: context == current sequence
             # q [B, nh, S, d] causal attn over cache[:cur_len] -> ctx [B, nh, S, d=128]
-            attn_ctx = ops.fused_attn_forward(
-                q, cache_k, cache_v, cur_len, self._softmax_scale, cos, sin
-            )
+            with rng("fused_attn"):
+                attn_ctx = ops.fused_attn_forward(
+                    q, cache_k, cache_v, cur_len, self._softmax_scale, cos, sin
+                )
 
         w_o = self.weights[f"model.layers.{layer}.self_attn.o_proj.weight"]
         # back to token-major and flatten heads: [B, nh, S, d] -> [B, S, nh, d] -> [B*S, hq=3584]
         flat_ctx = attn_ctx.transpose(1, 2).reshape(batch * seq_len, hq)
-        out = ops.o_proj_forward(flat_ctx, w_o)  # [B*S, hq] -> [B*S, hq=3584]
+        with rng("o_proj"):
+            out = ops.o_proj_forward(flat_ctx, w_o)  # [B*S, hq] -> [B*S, hq=3584]
         return out.reshape(batch, seq_len, cfg.hidden_size)  # [B, S, hq=3584]
 
     def run_decoder_layer(
@@ -236,41 +253,46 @@ class Qwen2Executor:
 
         for step in cfg.layer_order:
             if step == "input_rmsnorm":
-                normed = ops["rmsnorm_forward"](
-                    hidden,
-                    w[f"{prefix}.input_layernorm.weight"],
-                    cfg.rms_norm_eps,
-                )
+                with rng("input_rmsnorm"):
+                    normed = ops["rmsnorm_forward"](
+                        hidden,
+                        w[f"{prefix}.input_layernorm.weight"],
+                        cfg.rms_norm_eps,
+                    )
             elif step == "attention":
                 if normed is None:
                     raise RuntimeError("layer_order: attention before input_rmsnorm")
-                attn_out = self._run_attention(normed, layer, seq_len, decode=decode)
+                with rng("attention"):
+                    attn_out = self._run_attention(normed, layer, seq_len, decode=decode)
             elif step == "residual_add":
-                if residual_2 is None:
-                    if attn_out is None:
-                        raise RuntimeError("layer_order: residual_add before attention")
-                    hidden = ops["residual_add_forward"](residual_1, attn_out)
-                    residual_2 = hidden
-                else:
-                    if mlp_out is None:
-                        raise RuntimeError("layer_order: second residual_add before swiglu_mlp")
-                    hidden = ops["residual_add_forward"](residual_2, mlp_out)
+                with rng("residual_add"):
+                    if residual_2 is None:
+                        if attn_out is None:
+                            raise RuntimeError("layer_order: residual_add before attention")
+                        hidden = ops["residual_add_forward"](residual_1, attn_out)
+                        residual_2 = hidden
+                    else:
+                        if mlp_out is None:
+                            raise RuntimeError("layer_order: second residual_add before swiglu_mlp")
+                        hidden = ops["residual_add_forward"](residual_2, mlp_out)
             elif step == "post_attn_rmsnorm":
-                normed = ops["rmsnorm_forward"](
-                    hidden,
-                    w[f"{prefix}.post_attention_layernorm.weight"],
-                    cfg.rms_norm_eps,
-                )
+                with rng("post_attn_rmsnorm"):
+                    normed = ops["rmsnorm_forward"](
+                        hidden,
+                        w[f"{prefix}.post_attention_layernorm.weight"],
+                        cfg.rms_norm_eps,
+                    )
             elif step == "swiglu_mlp":
                 if normed is None:
                     raise RuntimeError("layer_order: swiglu_mlp before post_attn_rmsnorm")
                 mlp = f"{prefix}.mlp"
-                mlp_out = ops["swiglu_forward"](
-                    normed,
-                    w[f"{mlp}.gate_proj.weight"],
-                    w[f"{mlp}.up_proj.weight"],
-                    w[f"{mlp}.down_proj.weight"],
-                )
+                with rng("swiglu_mlp"):
+                    mlp_out = ops["swiglu_forward"](
+                        normed,
+                        w[f"{mlp}.gate_proj.weight"],
+                        w[f"{mlp}.up_proj.weight"],
+                        w[f"{mlp}.down_proj.weight"],
+                    )
             else:
                 raise ValueError(f"unknown layer_order step: {step!r}")
 
@@ -281,14 +303,17 @@ class Qwen2Executor:
         ops = self._ops
 
         for layer in range(cfg.num_hidden_layers):
-            hidden = self._run_decoder_layer(hidden, layer, seq_len, decode=decode)
+            with rng(f"layer{layer}"):
+                hidden = self._run_decoder_layer(hidden, layer, seq_len, decode=decode)
 
-        hidden = ops["rmsnorm_forward"](
-            hidden,
-            self.weights["model.norm.weight"],
-            cfg.rms_norm_eps,
-        )
-        return ops["lm_head_forward"](hidden, self._lm_head_weight())
+        with rng("final_rmsnorm"):
+            hidden = ops["rmsnorm_forward"](
+                hidden,
+                self.weights["model.norm.weight"],
+                cfg.rms_norm_eps,
+            )
+        with rng("lm_head"):
+            return ops["lm_head_forward"](hidden, self._lm_head_weight())
 
     def prefill(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
@@ -303,12 +328,14 @@ class Qwen2Executor:
         self._validate_input_ids(input_ids, seq_len)
         self.reset_kv_cache()
 
-        hidden = self._ops["embedding_forward"](
-            input_ids,
-            self.weights["model.embed_tokens.weight"],
-        )
+        with rng("prefill"):
+            with rng("embedding"):
+                hidden = self._ops["embedding_forward"](
+                    input_ids,
+                    self.weights["model.embed_tokens.weight"],
+                )
 
-        logits = self._forward_stack(hidden, seq_len, decode=False)
+            logits = self._forward_stack(hidden, seq_len, decode=False)
         self._advance_cache_pos(seq_len)
         return logits
 
@@ -329,12 +356,14 @@ class Qwen2Executor:
         input_ids = token_id.unsqueeze(1)
         self._validate_input_ids(input_ids, seq_len)
 
-        hidden = self._ops["embedding_forward"](
-            input_ids,
-            self.weights["model.embed_tokens.weight"],
-        )
+        with rng("decode"):
+            with rng("embedding"):
+                hidden = self._ops["embedding_forward"](
+                    input_ids,
+                    self.weights["model.embed_tokens.weight"],
+                )
 
-        logits = self._forward_stack(hidden, seq_len, decode=True)
+            logits = self._forward_stack(hidden, seq_len, decode=True)
         self._advance_cache_pos(1)
         return logits
 

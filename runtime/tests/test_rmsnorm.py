@@ -1,4 +1,7 @@
-"""Tests for target RMSNorm AOT kernel integration (Phase 3)."""
+"""Tests for RMSNorm AOT kernel integration (Phase 3).
+
+7B cases exercise the ``target`` suite; 0.5B cases exercise the ``draft`` suite.
+"""
 
 import importlib
 import os
@@ -11,6 +14,8 @@ from runtime.core.config import CONFIG_05B, CONFIG_7B, RuntimeConfig
 from runtime.core.weights import load_weights
 from runtime.production_kernels.target.rmsnorm import forward, init, workspace_bytes
 from runtime.production_kernels.target.rmsnorm.ops import EXTENSION_MODULE
+from runtime.production_kernels.draft.rmsnorm import forward as draft_forward, init as draft_init
+from runtime.production_kernels.draft.rmsnorm.ops import EXTENSION_MODULE as DRAFT_EXTENSION_MODULE
 
 PROJECT_ROOT = os.environ.get(
     "PROJECT_ROOT", "/home/cme213/tobiascm/cme213-final-project"
@@ -25,6 +30,12 @@ class TestRmsnormAot(unittest.TestCase):
         self.assertTrue(hasattr(ext, "forward"))
         self.assertNotIn("torch_extensions", ext.__file__)
         self.assertIn("production_kernels/target/rmsnorm", ext.__file__.replace("\\", "/"))
+
+    def test_draft_extension_importable(self) -> None:
+        ext = importlib.import_module(DRAFT_EXTENSION_MODULE)
+        self.assertTrue(hasattr(ext, "forward"))
+        self.assertNotIn("torch_extensions", ext.__file__)
+        self.assertIn("production_kernels/draft/rmsnorm", ext.__file__.replace("\\", "/"))
 
 
 class TestRmsnormInterface(unittest.TestCase):
@@ -52,16 +63,6 @@ class TestRmsnormGpu(unittest.TestCase):
                 msg=f"batch={batch} seq={seq}",
             )
 
-    def test_forward_matches_hf_05b(self) -> None:
-        cfg = RuntimeConfig.from_yaml(CONFIG_05B, project_root=PROJECT_ROOT)
-        hf = Qwen2RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps).cuda().half()
-
-        x = torch.randn(2, 64, cfg.hidden_size, dtype=torch.float16, device="cuda")
-        with torch.no_grad():
-            expected = hf(x)
-            actual = forward(x, hf.weight, cfg.rms_norm_eps)
-        self.assertTrue(torch.allclose(expected, actual, atol=1e-3, rtol=1e-3))
-
     @unittest.skipUnless(
         os.path.isfile(
             os.path.join(PROJECT_ROOT, "models/Qwen2.5-7B-Instruct/model-00001-of-00004.safetensors")
@@ -82,6 +83,27 @@ class TestRmsnormGpu(unittest.TestCase):
             expected = hf(x)
             actual = forward(x, w, cfg.rms_norm_eps)
         self.assertTrue(torch.allclose(expected, actual, atol=1e-3, rtol=1e-3))
+
+
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+class TestRmsnormDraftGpu(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        draft_init()
+
+    def test_forward_matches_hf_05b(self) -> None:
+        cfg = RuntimeConfig.from_yaml(CONFIG_05B, project_root=PROJECT_ROOT)
+        hf = Qwen2RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps).cuda().half()
+
+        for batch, seq in [(1, 1), (1, 128), (2, 64)]:
+            x = torch.randn(batch, seq, cfg.hidden_size, dtype=torch.float16, device="cuda")
+            with torch.no_grad():
+                expected = hf(x)
+                actual = draft_forward(x, hf.weight, cfg.rms_norm_eps)
+            self.assertTrue(
+                torch.allclose(expected, actual, atol=1e-3, rtol=1e-3),
+                msg=f"batch={batch} seq={seq}",
+            )
 
 
 if __name__ == "__main__":

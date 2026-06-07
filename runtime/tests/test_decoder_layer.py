@@ -1,4 +1,7 @@
-"""Stage 2 parity: single composed decoder layer vs HF (Phase 6)."""
+"""Stage 2 parity: single composed decoder layer vs HF (Phase 6).
+
+Runs for both the 7B target and 0.5B draft model (config-driven executor).
+"""
 
 from __future__ import annotations
 
@@ -8,9 +11,11 @@ import torch
 
 from runtime.tests.parity_support import (
     GPU_SKIP,
+    HAS_05B_WEIGHTS,
     HAS_7B_WEIGHTS,
     REQUIRES_GPU,
     capture_decoder_layer,
+    default_05b_cfg,
     default_7b_cfg,
     hidden_allclose,
     load_hf_and_executor,
@@ -18,14 +23,14 @@ from runtime.tests.parity_support import (
 )
 
 
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-@unittest.skipUnless(HAS_7B_WEIGHTS, "7B weights not on disk")
-class TestDecoderLayerParity(unittest.TestCase):
+class _DecoderLayerParityBase:
     """One HF model load; hook captures layer I/O for kernel-composed comparison."""
+
+    CFG_LOADER: staticmethod
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.cfg = default_7b_cfg()
+        cls.cfg = cls.CFG_LOADER()
         cls.hf, cls.executor = load_hf_and_executor(cls.cfg, max_seq_len=64)
 
     @classmethod
@@ -62,6 +67,18 @@ class TestDecoderLayerParity(unittest.TestCase):
     def test_last_layer(self) -> None:
         ids = torch.tensor([[151643, 8948, 198]], device="cuda")
         self._assert_layer(self.cfg.num_hidden_layers - 1, ids)
+
+
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+@unittest.skipUnless(HAS_7B_WEIGHTS, "7B weights not on disk")
+class TestDecoderLayerParity(_DecoderLayerParityBase, unittest.TestCase):
+    CFG_LOADER = staticmethod(default_7b_cfg)
+
+
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+@unittest.skipUnless(HAS_05B_WEIGHTS, "0.5B weights not on disk")
+class TestDecoderLayer05BParity(_DecoderLayerParityBase, unittest.TestCase):
+    CFG_LOADER = staticmethod(default_05b_cfg)
 
 
 if __name__ == "__main__":

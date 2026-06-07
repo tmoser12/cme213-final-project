@@ -9,7 +9,7 @@ import torch
 from transformers import AutoModelForCausalLM
 
 from runtime.buffers import RuntimeBuffers, allocate_buffers
-from runtime.core.config import CONFIG_7B, RuntimeConfig
+from runtime.core.config import CONFIG_05B, CONFIG_7B, RuntimeConfig
 from runtime.core.weights import expected_keys
 from runtime.executor import Qwen2Executor
 from runtime.tests._support import PROJECT_ROOT
@@ -21,6 +21,9 @@ HIDDEN_RTOL = 0.05
 
 HAS_7B_WEIGHTS = os.path.isfile(
     Path(PROJECT_ROOT) / "models/Qwen2.5-7B-Instruct/model-00001-of-00004.safetensors"
+)
+HAS_05B_WEIGHTS = os.path.isfile(
+    Path(PROJECT_ROOT) / "models/Qwen2.5-0.5B-Instruct/model.safetensors"
 )
 
 REQUIRES_GPU = not torch.cuda.is_available()
@@ -137,3 +140,7 @@ def greedy_decode_executor(
 
 def default_7b_cfg() -> RuntimeConfig:
     return RuntimeConfig.from_yaml(CONFIG_7B, project_root=PROJECT_ROOT)
+
+
+def default_05b_cfg() -> RuntimeConfig:
+    return RuntimeConfig.from_yaml(CONFIG_05B, project_root=PROJECT_ROOT)
