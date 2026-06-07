@@ -71,7 +71,9 @@ class TestDecodeStatic(unittest.TestCase):
         self.assertEqual(tuple(b.static_input_ids.shape), (1, 1))
         self.assertEqual(b.static_input_ids.dtype, torch.int64)
         self.assertEqual(b.static_cur_len.shape, ())
-        self.assertEqual(tuple(b.static_cos.shape), (1, 1, self.cfg.head_dim))
+        # RoPE is gathered in-graph from rope_arange + cache_position (no static_cos/sin).
+        self.assertEqual(b.rope_arange.dtype, torch.int64)
+        self.assertGreaterEqual(b.rope_arange.numel(), 8)
 
 
 if __name__ == "__main__":

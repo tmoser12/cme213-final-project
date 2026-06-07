@@ -266,12 +266,12 @@ being ported in (`draft_model_files/`, synced from `origin/eli_dev`). Steps when
 
 Not blockers for a working graphed decode; revisit once the MVP lands and is benchmarked.
 
-- ⬜ **Fold the RoPE slice+update into the graph.** Replace the per-step host-side `static_cos/sin`
-  refresh with in-kernel indexing of the full `rope_cos/rope_sin` table by the device position
-  scalar (`cache_position`). Removes the last per-step host launch on the decode path; the full
-  table is already resident so there's no extra memory cost. Needs the `_dev` attention +
-  rope-kv-write kernels to accept `(full_table, device_row_offset)` instead of pre-sliced cos/sin.
-  (See Phase 3 note.)
+- ✅ **Fold the RoPE slice+update into the graph (DONE 2026-06-07).** Implemented *without* kernel
+  surgery: `buffers.static_rope(S)` gathers rows **inside the captured graph** via
+  `rope_cos.index_select(0, cache_position + rope_arange[:S])` — an index_select driven by the
+  device position scalar over the resident full tables. The `_dev` ops still receive `[batch,S,D]`
+  cos/sin (no kernel change), and `static_cos/sin` buffers + the host `refresh_decode_rope` + the
+  per-S verify cos/sin buffers were all removed. Bit-exact vs the old path; graph tests still pass.
 - ⬜ **Persistent static logits output.** Optionally `copy_` the captured logits into
   `buffers.logits` (stable address) so callers never see a pool-internal tensor.
 - ⬜ **Graph the prefill** (bucketed by length) if prefill launch overhead turns out to matter.

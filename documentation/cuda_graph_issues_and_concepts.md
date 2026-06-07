@@ -220,7 +220,7 @@ step touches them. This split is the whole reason the static decode forward exis
 
 | Half | Method | Runs | Touches |
 |---|---|---|---|
-| Update | `_prepare_decode_static(token_id)` | eager, per step (per replay in Phase 4) | `static_input_ids.copy_`, `cache_position.fill_` (write_pos), `static_cur_len.fill_` (= write_pos+1), `refresh_decode_rope(pos)` |
+| Update | `_prepare_decode_static(token_id)` | eager, per step (per replay in Phase 4) | `static_input_ids.copy_`, `cache_position.fill_` (write_pos), `static_cur_len.fill_` (= write_pos+1). *(RoPE now gathered in-graph — see update box below.)* |
 | Forward | `_decode_forward_static()` | captured once, replayed | reads only those static buffers + weights + KV cache, via the `_dev` ops |
 
 `decode_step_static` = update + forward + advance, and is the **eager** stand-in we validate now;
@@ -237,11 +237,15 @@ token id, the two position scalars, and the RoPE row.
 
 ### What stays outside the graph (and why)
 
-The RoPE refresh (`refresh_decode_rope`) is a host-side slice + `copy_` in the **update** step. It's
-correct there, but it's one extra per-step launch we'd like to eliminate eventually by indexing the
-full rope table with the device position scalar *inside* the kernel (tracked under "Future
-optimizations" in `graph_plan.md`). Sampling/argmax also stay outside — they involve host decisions
-and must not be in the frozen region (§1.5 rule 4).
+> **Update (RoPE folded in, 2026-06-07).** The RoPE gather is now done *inside* the captured graph:
+> `buffers.static_rope(S)` computes `rows = cache_position + rope_arange[:S]` and
+> `rope_cos.index_select(0, rows)` — an index_select driven by the device position scalar over the
+> resident full tables. So the only per-step host work is writing the token + the position scalars;
+> the old host-side `refresh_decode_rope` slice/copy (and the `static_cos/sin` buffers) are gone.
+> The `_dev` ops still receive `[batch,S,D]` cos/sin, so no kernel change was needed.
+
+Sampling/argmax stay outside the graph — they involve host decisions and must not be in the frozen
+region (§1.5 rule 4).
 
 ### Validation
 
