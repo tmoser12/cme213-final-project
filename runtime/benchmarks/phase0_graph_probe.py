@@ -14,7 +14,7 @@ Two things, no kernel changes:
       Position is held fixed on purpose: that neutralizes the known host-int
       write_pos/cur_len baking problem, so this isolates ONE question —
       does graph-pool replay of an allocation-heavy forward reproduce the eager
-      result? If yes, the handoff's "rewrite every op allocation-free" claim is
+      result? If yes, the previous attempt's "rewrite every op allocation-free" claim is
       unnecessary and we proceed with the lean plan (device-scalar positions +
       static inputs). If no, we investigate the culprit op.
 

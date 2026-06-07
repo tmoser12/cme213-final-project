@@ -1,112 +1,96 @@
 # Qwen2 Inference Runtime
 
-Minimal, config-driven runtime for custom CUDA kernel integration. Not production code — built for fast iteration on a research project.
+Config-driven inference engine for Qwen2.5 (**7B target** + **0.5B draft**) on Turing GPUs.
+Python owns orchestration; ahead-of-time-compiled CUDA kernels own the math. Built for a research
+project (CUDA graphs + speculative decoding), not production.
 
 ## Layout
 
 ```
 runtime/
-├── core/                    # config, shapes, memory, weights
-│   ├── configs/
-│   │   ├── qwen2.5-7b.yaml  # 7B model constants + policy
-│   │   └── qwen2.5-0.5b.yaml
-│   ├── config.py            # load YAML → RuntimeConfig
-│   ├── shapes.py            # shape/byte helpers (derived from config)
-│   ├── memory.py            # plan_memory() estimates
-│   └── weights.py           # load_weights() from safetensors
-├── production_kernels/      # CUDA kernels (host-callable ops)
-│   └── rmsnorm/             # ops.py: init / workspace_bytes / forward
-├── tests/                   # unit tests (config, shapes, weights)
-└── plan.md                  # implementation roadmap
+├── core/                       # config, shapes, memory, weights
+│   ├── configs/                # qwen2.5-7b.yaml (kernel_set=target), qwen2.5-0.5b.yaml (draft)
+│   ├── config.py shapes.py memory.py weights.py
+├── buffers.py                  # pre-allocated device buffers (KV cache, rope tables, static graph scratch)
+├── executor.py                 # Qwen2Executor — eager prefill / decode / verify_gamma / greedy_extend
+├── executor_graph.py           # GraphExecutorMixin — CUDA-graph capture/replay (decode + verify)
+├── production_kernels/
+│   ├── target/<op>/            # 7B kernels (head_dim=128): rmsnorm, embedding, attention, swiglu, residual_ops
+│   └── draft/<op>/             # 0.5B kernels (head_dim=64), same layout
+├── speculative/                # draft_runner, target_step, sampler, spec_decode, mpi_coordinator, mpi_protocol
+├── benchmarks/                 # baseline + graph + spec-decode benchmarks
+├── tests/                      # unit + GPU parity tests
+└── plan.md                     # phase roadmap / status
 ```
 
-Each YAML is the **single source of truth** for a model: architecture dims, dtype policy, paths, KV layout, and decoder layer order. Code derives `head_dim`, weight shapes, and buffer sizes from the loaded config.
+Each YAML is the **single source of truth** for a model (dims, dtype, paths, layer order,
+`kernel_set`). Code derives `head_dim`, weight shapes, and buffer sizes from the config.
 
-## Usage
+## Quick start
 
 ```python
 from runtime.core.config import RuntimeConfig, CONFIG_7B
-from runtime.core.memory import plan_memory
-from runtime.core import shapes
+from runtime.core.weights import load_weights_on_gpu
+from runtime.buffers import allocate_buffers
+from runtime.executor import Qwen2Executor
 
-cfg = RuntimeConfig.from_yaml(CONFIG_7B, project_root="/path/to/project")
-cfg.validate()
+cfg = RuntimeConfig.from_yaml(CONFIG_7B, project_root=PROJECT_ROOT)   # or CONFIG_05B (draft)
+weights, _ = load_weights_on_gpu(cfg, batch=1, device="cuda")
+buffers = allocate_buffers(cfg, batch=1, max_seq_len=512, device="cuda")
+ex = Qwen2Executor(cfg, weights, buffers, use_cuda_graph=True)        # kernel_set from cfg
 
-print(cfg.head_dim)                          # 128
-print(shapes.q_states(1, 128, cfg))          # (1, 28, 128, 128)
-print(plan_memory(cfg, batch=1, max_seq_len=512)["weight_mib"])
-
-# Production: load 7B only (one model per GPU — never both on same device)
-cfg = RuntimeConfig.from_yaml(CONFIG_7B, project_root=PROJECT_ROOT)
-weights, budget = load_weights_on_gpu(cfg, batch=1, reserve_mib=512)
-print(f"free VRAM after 7B weights: {budget['gpu']['free_mib']:.0f} MiB")
-print(f"max seq len for buffers: {budget['max_seq_len']}")
+logits = ex.prefill(input_ids)                    # [B, S, vocab]
+seq = ex.greedy_extend(input_ids, n_new_tokens=64, use_cuda_graph=True)
 ```
 
-**Single-model assumption:** `vram_budget()` measures free HBM after exactly one model's weights are loaded. Use `CONFIG_7B` for production buffer sizing on 24GB Turing nodes. Never load 7B and 0.5B on the same GPU.
-
-## 7B VRAM budget (Quadro RTX 6000, batch=1)
-
-Measured on `gpu-turing` after loading **only** the 7B weights in FP16:
-
-| | Value |
-|---|---|
-| GPU total | 22,682 MiB |
-| 7B weights | 14,526 MiB |
-| **Free after weights** | **7,984 MiB** |
-| Buffer budget (free − 512 MiB reserve) | 7,472 MiB |
-| Cost per seq position | ~413 KiB (activations + KV cache) |
-| **Max seq len @ batch=1** | **18,525 tokens** |
-
-The YAML default `max_seq_len: 2048` is conservative — ~18.5k tokens fits at batch size 1 on this GPU. The 512 MiB reserve is headroom for kernel scratch and fragmentation.
-
-Re-measure on a GPU node:
+## Build kernels
 
 ```bash
-PYTHONNOUSERSITE=1 srun --partition=gpu-turing --gres=gpu:1 \
-  bash -lc 'cd $PROJECT_ROOT && conda run -n cme213 python -m runtime.tests.print_7b_vram'
+bash scripts/build_kernels.sh                 # all roles, all ops
+bash scripts/build_kernels.sh draft attention # one role/op  (attention OOMs on the login node — use srun)
+```
+`.so` files land beside each `ops.py`; inference imports them (no runtime JIT).
+
+## CUDA graphs
+
+The per-token forward (~150 kernel launches) is capturable behind `use_cuda_graph`:
+`decode_step_graph` (S=1) and `verify_gamma_graph` (S=γ+1). Positions live in device scalars and
+RoPE is gathered in-graph, so one graph replays across all steps/prompts. Bit-exact vs eager.
+
+- **7B target: ~1.00×** — memory-bandwidth-bound (reading ~15 GB of weights/token dominates).
+- **0.5B draft: ~1.64×** — genuinely launch-bound; this is where graphs pay off.
+
+See `documentation/cuda_graphs_explained.md` (concepts), `cuda_graph_issues_and_concepts.md`
+(issues journal), and the `*_graph_benchmarks.md` docs.
+
+## Speculative decoding
+
+7B target verifies γ drafts proposed by the 0.5B draft (host-side stochastic accept/reject;
+`documentation/speculative_decoding.md`).
+
+```python
+from runtime.speculative.draft_runner import DraftRunner
+from runtime.speculative.spec_decode import speculative_generate
+res = speculative_generate(target_ex, DraftRunner(draft_ex, seed=0), prompt, n_new=64, gamma=4)
 ```
 
-GPU tests: `bash slurm/run_tests_gpu.sh` (defaults to 7B-only tests)
-
-Pass either bundled config path or your own YAML — same code works for 7B and 0.5B.
+- **Single-process** (both models, one GPU — they fit: ~15 GB): `speculative_generate`. With greedy
+  standardization it reproduces the target's greedy sequence exactly.
+- **2-GPU MPI** (target on cuda:0, draft on cuda:1): `bash slurm/run_speculative.sh --steps 32 --gamma 4`.
 
 ## Tests
 
-Setup tests (config, memory plan, engine-ready configuration) — run on CPU:
-
 ```bash
-source setup.sh
-python -m unittest runtime.tests.test_config runtime.tests.test_memory runtime.tests.test_engine_setup -v
+# CPU (login node): config / memory / structure / wire protocol
+python -m unittest runtime.tests.test_config runtime.tests.test_mpi_protocol
+# GPU (one targeted module per job — avoids the 30-min cap; one model copy per job)
+bash slurm/run_tests_gpu.sh runtime.tests.test_decode_graph
+bash slurm/run_tests_gpu.sh runtime.tests.test_draft_executor
 ```
 
-GPU kernel / weight tests:
+## Docs
 
-```bash
-bash slurm/run_tests_gpu.sh runtime.tests.test_weights.TestGpuLoad7B
-```
-
-## Production kernels (Phase 3)
-
-Kernels live under `runtime/production_kernels/target/<op>/`:
-
-```
-kernel.cu, bindings.cpp, ops.py, target_<op>_ops*.so   # built via scripts/build_kernels.sh
-```
-
-Build once, then run GPU parity tests in `runtime/tests/`:
-
-```bash
-bash scripts/build_kernels.sh              # all ops, or: bash scripts/build_kernels.sh rmsnorm
-bash slurm/run_tests_gpu.sh runtime.tests.test_rmsnorm
-```
-
-```python
-from runtime.production_kernels.target.rmsnorm import forward
-
-out = forward(input, weight, eps)  # AOT extension — no runtime compile
-```
-
-## Next steps
-
-See `plan.md` — remaining kernels + full decoder loop; allocate buffers via `plan_memory()`.
+`documentation/runtime_architecture_and_execution.md` (forward pass), `runtime_kernel_system.md`
+(kernels/build), `cuda_graphs_explained.md` + `cuda_graph_issues_and_concepts.md` (graphs),
+`target_graph_benchmarks.md` + `draft_graph_benchmarks.md` (numbers). Plans: `graph_plan.md`,
+`draft_integration_plan.md`, `runtime/plan.md`.

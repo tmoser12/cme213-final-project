@@ -1,6 +1,9 @@
 # MPI Transfer Benchmarks (2-GPU Speculative Decoding)
 
-Quick benchmark data for MPI send/recv between two GPUs on the Stanford HPCC `gpu-turing` partition. Payloads match the Phase 8c wire protocol in `test_mpi/protocol.py` and `runtime/plan.md`.
+Quick benchmark data for MPI send/recv between two GPUs on the Stanford HPCC `gpu-turing` partition.
+The wire payloads here are identical to the production protocol now in
+`runtime/speculative/mpi_protocol.py` (used by `runtime/speculative/mpi_coordinator.py`); this doc's
+numbers come from the `test_mpi/` micro-benchmark of the same payloads.
 
 **Implementation:** `test_mpi/benchmark.py`  
 **Run:** `bash test_mpi/run_mpi.sh --slurm-gpu --benchmark`

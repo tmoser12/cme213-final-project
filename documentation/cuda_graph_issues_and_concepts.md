@@ -140,8 +140,8 @@ kernel launch, including plain scalars. Our attention kernels took the sequence 
 If we capture a decode at sequence position `p`, the graph bakes in `write_pos = p` and
 `cur_len = p+1`. Replaying it for the *next* token would still scatter K/V into row `p` (clobbering
 it) and attend over only `p+1` positions — i.e. the graph is **frozen at the capture-time
-position**. That is exactly the "growing 614 → 3978" error the old handoff saw once streams were
-(accidentally) working: a position-frozen replay. Phase 0's probe avoided it only by holding the
+position**. That is exactly the "growing 614 → 3978" error the previous (reset-away) attempt saw once
+streams were (accidentally) working: a position-frozen replay. Phase 0's probe avoided it only by holding the
 position *fixed*.
 
 ### The fix: read the position from device memory

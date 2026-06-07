@@ -1,6 +1,10 @@
 # test_mpi — Mock MPI Speculative Decoding Prototype
 
-Minimal **2-rank mpi4py** setup that mimics the speculative-decoding control loop without loading any models. Use this as the reference when porting Phase 8c into `runtime/speculative/`.
+Minimal **2-rank mpi4py** setup that mimics the speculative-decoding control loop without loading any models.
+
+> ✅ **Ported (2026-06-07).** Phase 8c now lives in `runtime/speculative/mpi_protocol.py` +
+> `mpi_coordinator.py` (real 7B target + 0.5B draft, launched by `slurm/run_speculative.sh`). This
+> directory remains as a lightweight, model-free MPI smoke test and the design reference below.
 
 **Related docs:** `runtime/plan.md` (Phase 8c), `documentation/speculative_decoding.md`, Phase 8a golden path in `runtime/speculative/target_step.py`.
 

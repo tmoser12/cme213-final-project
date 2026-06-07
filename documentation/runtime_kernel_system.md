@@ -6,11 +6,14 @@ How custom CUDA kernels in `runtime/` are compiled, exposed to Python, tested, a
 
 The runtime follows a **Python host + prebuilt CUDA extensions** split:
 
-- **Python** owns orchestration: config loading, weight I/O, buffer allocation, and the decoder loop (`executor.py`, planned).
+- **Python** owns orchestration: config loading, weight I/O, buffer allocation, and the decoder loop (`executor.py`).
 - **C++/CUDA** owns compute: each op is a `kernel.cu` + `bindings.cpp` pair compiled ahead of time (AOT) into a shared library.
 - **`ops.py`** is the only Python surface the inference engine imports — a thin wrapper over the prebuilt extension module.
 
-Kernels are grouped by **model role** under `runtime/production_kernels/<role>/`. Today only `target/` (the main model) exists; a future `draft/` tree will hold speculative-decoding draft-model kernels with the same layout.
+Kernels are grouped by **model role** under `runtime/production_kernels/<role>/`. Both `target/`
+(7B, head_dim=128) and `draft/` (0.5B, head_dim=64) trees exist with the same op layout; the
+executor picks the set from `cfg.kernel_set`. Each op also has a device-scalar `_dev` attention
+variant for CUDA-graph capture (see `cuda_graph_issues_and_concepts.md`).
 
 ```
 YAML config  →  RuntimeConfig  →  executor (Python)
@@ -562,8 +565,6 @@ bash slurm/run_tests_gpu.sh runtime.tests.test_my_op
 ```
 
 **5.** Wire into `executor.py` when the decoder loop needs the op.
-
-See also `documentation/kernel_development_skill.md` for the partner workflow (CUDA authoring, micro-benchmarks). That doc covers the JIT + `wrapper.py` path; the runtime inference path uses AOT + `ops.py` instead.
 
 ## Current status
 

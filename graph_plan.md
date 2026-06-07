@@ -5,7 +5,6 @@ Update the checkboxes and notes as work lands. Companion to:
 - `documentation/cuda_graphs_explained.md` — concepts / mental model (read first)
 - `documentation/cuda_graph_issues_and_concepts.md` — journal of concrete issues hit, each explained
 - `runtime/plan.md` — overall engine plan
-- `documentation/handoff.md` — previous attempt (advisory only; that code was reset away)
 
 ---
 
@@ -20,7 +19,7 @@ the decode loop (and later the speculative `verify_gamma`) is bound by GPU work,
 
 ## Key findings from repo audit (2026-06-06)
 
-These reframe the work and **shrink it substantially** vs. the previous handoff.
+These reframe the work and **shrink it substantially** vs. the previous (reset-away) attempt.
 
 1. **Kernels are already graph-pool safe.** Every op (`rmsnorm`, `embedding`, `attention`,
    `swiglu`, `residual_ops`) allocates outputs *only* via `torch::empty` / `at::empty` /
@@ -29,7 +28,7 @@ These reframe the work and **shrink it substantially** vs. the previous handoff.
    → During `torch.cuda.graph(...)` capture, those allocations come from the graph's private
      pool and get **deterministic, stable addresses on replay**. This is the supported PyTorch
      pattern (gpt-fast, vLLM). **We do NOT need allocation-free `_out` variants for every op.**
-   → The handoff's stated root cause ("torch::empty breaks replay") is most likely **wrong**.
+   → The previous attempt's stated root cause ("torch::empty breaks replay") is most likely **wrong**.
      Phase 0 validates this empirically before any kernel surgery.
 
 2. **The real blocker is host-scalar position args.** `rope_kv_write_forward(..., int64_t
@@ -296,7 +295,7 @@ Not blockers for a working graphed decode; revisit once the MVP lands and is ben
     "capture" but are never *recorded*; replay re-runs only the few captured PyTorch view/copy ops
     over pool buffers nothing fills → garbage that grows as pool memory churns.
   - **The allocation hypothesis is therefore dead** — `torch::empty` via the caching allocator is
-    fine (rmsnorm proves it); no need to rewrite ops allocation-free, contra `handoff.md`.
+    fine (rmsnorm proves it); no need to rewrite ops allocation-free, contra the previous attempt.
   - Plan reordered: **new Phase 1 = launch every kernel on the current stream** (small, mechanical,
     eager-safe), then re-run the Phase 0 diagnostics as the true validation, *then* device-scalar
     positions (now Phase 2) etc.

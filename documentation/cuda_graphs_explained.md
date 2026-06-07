@@ -156,7 +156,7 @@ PyTorch's **caching allocator + a private graph memory pool** solves both:
 **Consequence for us:** ops that allocate their outputs with `torch::empty` (which is *all* of
 ours) are **graph-safe** as long as we capture inside `torch.cuda.graph(...)`. We do **not** need
 to rewrite every kernel to write into pre-allocated `_out` buffers. (This is the key disagreement
-with `documentation/handoff.md`, whose stated root cause — "torch::empty breaks replay" — is
+with the previous (reset-away) attempt, whose stated root cause — "torch::empty breaks replay" — is
 **wrong**. Phase 0 confirmed it empirically: a single rmsnorm op captures and replays correctly
 through the caching allocator. The real blocker was the stream rule in §1.6, not allocations.)
 
@@ -253,7 +253,7 @@ Two distinct violations of rule 3 / rule 1:
    `attention/kernel.cu`). The graph **bakes these values in.** Replay would forever scatter K/V
    at the captured slot and attend over the captured length — frozen at the position where we
    happened to capture, producing exactly the "garbage that grows as the sequence advances"
-   symptom the handoff reported. → The kernels need **`_dev` variants that read the position from
+   symptom the previous attempt reported. → The kernels need **`_dev` variants that read the position from
    a 0-d int64 CUDA tensor** (we already maintain such a tensor: `cache_position`). Then the
    recorded *argument* is just a pointer; we change the *contents* before each replay. (Plan Phase 2.)
 
@@ -261,10 +261,12 @@ Two distinct violations of rule 3 / rule 1:
    (`runtime/buffers.py:119-133`) returns `self.rope_cos[start:start+length]` — a *view* whose
    `data_ptr` depends on `write_pos`. Capturing bakes that one slice's address in, so replay always
    applies the rotation for the *captured* position. → Fix by keeping a small **static
-   `static_cos`/`static_sin` buffer** and refreshing it (one cheap copy) for the current position
-   *before* replay, outside the captured region. (Plan Phase 3.)
+   `static_cos`/`static_sin` buffer** and refreshing it for the current position before replay.
+   *(Update: this was later improved — the RoPE gather is now done **inside** the captured graph via
+   `index_select` driven by the `cache_position` scalar, so `static_cos/sin` and the host refresh
+   were removed. See `cuda_graph_issues_and_concepts.md` Concept #3.)* (Plan Phase 3.)
 
-### 2.5 What Phase 0 actually found (and how it corrects the handoff)
+### 2.5 What Phase 0 actually found (and how it corrects the previous attempt)
 
 Phase 0 (`runtime/benchmarks/phase0_graph_probe.py` + `phase0_graph_diag.py`) captured the *current*
 eager decode forward at a **fixed** position and replayed it with **identical inputs** — so the
@@ -287,14 +289,14 @@ the pool churns. The lone rmsnorm "passed" precisely because *nothing* of it was
 So:
 
 - **The allocation theory is dead.** rmsnorm proves the caching-allocator path works; `torch::empty`
-  is fine. We do **not** rewrite ops allocation-free (contra `handoff.md`).
+  is fine. We do **not** rewrite ops allocation-free (contra the previous attempt).
 - **The real fix is the stream rule** (§1.6): launch every kernel on `getCurrentCUDAStream()`. That
   is the new **Plan Phase 1**, and it must land before capture can record anything.
-- The host-int positions (2.4) are still a genuine bug — they'd produce the handoff's growing
+- The host-int positions (2.4) are still a genuine bug — they'd produce the previous attempt's growing
   `614 → 3978` "frozen at position `p`" error *after* streams are fixed — so they're **Plan Phase 2**.
 
-The handoff likely hit *both* problems at once (it never fixed the stream launches) and blamed the
-whole thing on allocations.
+The previous attempt likely hit *both* problems at once (it never fixed the stream launches) and blamed
+the whole thing on allocations.
 
 ### 2.6 The capture/replay loop we're building toward (concept, not code)
 
@@ -343,7 +345,7 @@ decisions and must not be inside the frozen region (rule 4).
   blocker**: every custom kernel launches on the **default stream**, so capture recorded nothing
   and replay produced growing garbage / NaN. Fix = launch each kernel on `getCurrentCUDAStream()`.
 - Our kernels already allocate only through PyTorch's caching allocator, so the graph's **private
-  pool handles intermediates** — no need to rewrite every op (contra the old handoff; Phase 0
+  pool handles intermediates** — no need to rewrite every op (contra the previous attempt; Phase 0
   confirmed rmsnorm captures/replays cleanly).
 - So the work, in order: **(1) stream-correct the kernels**, **(2) device-scalar positions**
   (`write_pos`/`cur_len`), **(3) static inputs** (token id + rope cos/sin), then **capture/replay**

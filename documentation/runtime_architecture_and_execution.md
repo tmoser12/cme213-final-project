@@ -4,6 +4,13 @@ A complete reference for the `runtime/` package: directory layout, memory/buffer
 
 For kernel build/import details, see [runtime_kernel_system.md](runtime_kernel_system.md).
 
+> **Currency note (2026-06-07).** This doc covers the *eager* core (config → weights → buffers →
+> executor → forward), which is still accurate. Built **on top** of it since: CUDA graphs
+> (`executor_graph.py` `GraphExecutorMixin`, `decode_step_graph`/`verify_gamma_graph`), the **draft**
+> model (`production_kernels/draft/`, `kernel_set` on `RuntimeConfig`), and **speculative decoding**
+> (`runtime/speculative/`, incl. the MPI coordinator). For those, see `cuda_graphs_explained.md`,
+> `cuda_graph_issues_and_concepts.md`, `graph_plan.md`, and `draft_integration_plan.md`.
+
 ---
 
 ## Table of contents
@@ -679,7 +686,9 @@ full = executor.greedy_extend(prompt, n_new_tokens=50)  # [1, 3+50]
 | Document / code | Contents |
 |-----------------|----------|
 | [runtime_kernel_system.md](runtime_kernel_system.md) | AOT build, pybind, per-op layout |
-| [qwen2_cuda_forward_plan.md](qwen2_cuda_forward_plan.md) | Original forward-plan notes |
+| [cuda_graphs_explained.md](cuda_graphs_explained.md) | CUDA-graph concepts + capture/replay |
+| [draft_graph_benchmarks.md](draft_graph_benchmarks.md) | draft graph + speculative decoding results |
+| `graph_plan.md` / `draft_integration_plan.md` | CUDA-graph + draft-integration roadmaps |
 | `runtime/plan.md` | Phase roadmap and status |
 | `runtime/production_kernels/target/attention/kernel.cu` | Attention math and `cur_len` semantics |
 | `runtime/tests/parity_support.py` | HF parity helpers and greedy trajectory |
