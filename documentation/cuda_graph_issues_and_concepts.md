@@ -325,3 +325,46 @@ Measure the bottleneck before optimizing. CUDA graphs are the right tool for **l
 inference (small models, the draft side of spec-decode, high batch), not for **memory-bound**
 single-stream 7B decode. The Phase 1–4 machinery is correct and validated; its payoff is on the
 draft model, not the 7B target.
+
+---
+
+## Concept #5 — Vocab mismatch between draft and target (speculative decoding)
+
+**Phase:** D6 · **Status:** handled & validated (2026-06-07) · not a graph issue — a spec-decode one
+
+### The concept
+
+Speculative decoding compares two distributions per position: the target's `p_i` and the draft's
+`q_i`, via the ratio test `r > p_i(x_i)/q_i(x_i)` and the rejection resample
+`p'(x) = norm(max(0, p − q))`. Those operations require `p` and `q` to live over **the same vocab
+index space**.
+
+But Qwen2.5-7B and 0.5B don't have the same `vocab_size`: **target 152064 vs draft 151936**. They
+share a tokenizer — ids `0…151935` mean the same token in both — and the target's extra 128 rows
+(`151936…152063`) are reserved padding (to a tensor-core-friendly size), essentially never sampled.
+So the draft's vocab is a **prefix** of the target's.
+
+### Symptoms if ignored
+
+- `max(0, p − q)` throws a shape mismatch (`[152064]` vs `[151936]`).
+- The ratio test for draft tokens still works (draft ids `< 151936` index both), but the bonus
+  resample breaks.
+- A bonus token the *target* samples in `[151936, 152064)` can't be embedded by the **draft**
+  (its `embed_tokens` only has 151936 rows) — the draft would index out of bounds on the next step.
+
+### The fix
+
+1. **Align for the sampler:** pad the draft `q` logits on the target-only tail with `−inf` so
+   `softmax(q)` is 0 there. Then `p` and `q` are both length-152064, the ratio test is unchanged for
+   real tokens, and `p − q` / resample are well-defined. (Padding with `−inf` = "the draft assigns
+   zero probability to tokens it doesn't model," which is exactly right.) Done in
+   `target_speculative_step`.
+2. **Guard the bonus:** `DraftRunner.apply_target_feedback` raises if `bonus_token >= draft_vocab` —
+   the draft can't embed it. This is a near-zero-probability event (reserved ids), surfaced rather
+   than silently corrupting the KV cache. (A production system could remap/clamp; we fail loud.)
+
+### Validation
+
+`test_spec_decode` — stochastic accept/reject runs end-to-end with the padding; greedy spec decode
+(argmax standardization) reproduces the target's greedy sequence exactly. See
+`documentation/draft_graph_benchmarks.md`.

@@ -1,10 +1,13 @@
-"""AOT build for runtime/production_kernels/target CUDA extensions.
+"""AOT build for runtime/production_kernels/{target,draft} CUDA extensions.
 
-Build one kernel:
+Build one target kernel:
     BUILD_KERNEL=rmsnorm python setup.py build_ext --inplace
 
-Build all target kernels:
+Build all kernels (both roles):
     python setup.py build_ext --inplace
+
+Build a single role / op (used by scripts/build_kernels.sh):
+    BUILD_ROLE=draft BUILD_KERNEL=attention python setup.py build_ext --inplace
 """
 
 from __future__ import annotations
@@ -36,63 +39,53 @@ from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 ROOT = Path(__file__).resolve().parent
-TARGET = ROOT / "runtime" / "production_kernels" / "target"
+PRODUCTION_KERNELS = ROOT / "runtime" / "production_kernels"
 
 NVCC_FLAGS = ["-O3", "--use_fast_math", "-arch=sm_75"]
 CXX_FLAGS = ["-O3"]
 
-KERNELS: dict[str, dict[str, object]] = {
-    "rmsnorm": {
-        "module": "target_rmsnorm_ops",
-        "sources": ["kernel.cu", "bindings.cpp"],
-    },
-    "embedding": {
-        "module": "target_embedding_ops",
-        "sources": ["kernel.cu", "bindings.cpp"],
-    },
-    "residual_ops": {
-        "module": "target_residual_ops",
-        "sources": ["kernel.cu", "bindings.cpp"],
-    },
-    "swiglu": {
-        "module": "target_swiglu_ops",
-        "sources": ["kernel.cu", "bindings.cpp"],
-    },
-    "attention": {
-        "module": "target_attention_ops",
-        "sources": ["kernel.cu", "bindings.cpp"],
-    },
-}
-
-PACKAGE_PREFIX = "runtime.production_kernels.target"
+# Each op compiles kernel.cu + bindings.cpp into <role>_<op>_ops, beside its ops.py.
+OPS = ["rmsnorm", "embedding", "residual_ops", "swiglu", "attention"]
+ROLES = ["target", "draft"]
+SOURCES = ["kernel.cu", "bindings.cpp"]
 
 
-def _extension_module(op: str, spec: dict[str, object]) -> str:
-    """Dotted module path — build_ext --inplace places .so beside ops.py."""
-    return f"{PACKAGE_PREFIX}.{op}.{spec['module']}"
+def _module_name(role: str, op: str) -> str:
+    # Match the names each ops.py imports: "<role>_<op>_ops", except ops whose
+    # name already ends in "_ops" (e.g. residual_ops -> "<role>_residual_ops").
+    suffix = op if op.endswith("_ops") else f"{op}_ops"
+    return f"{role}_{suffix}"
 
 
-def _make_extension(name: str, spec: dict[str, object]) -> CUDAExtension:
-    src_dir = TARGET / name
-    sources = spec["sources"]
-    assert isinstance(sources, list)
+def _make_extension(role: str, op: str) -> CUDAExtension:
+    src_dir = PRODUCTION_KERNELS / role / op
     return CUDAExtension(
-        name=_extension_module(name, spec),
-        sources=[str(src_dir / s) for s in sources],
+        name=f"runtime.production_kernels.{role}.{op}.{_module_name(role, op)}",
+        sources=[str(src_dir / s) for s in SOURCES],
         extra_compile_args={"cxx": CXX_FLAGS, "nvcc": NVCC_FLAGS},
     )
 
 
 def _selected_extensions() -> list[CUDAExtension]:
+    # BUILD_ROLE in {target, draft, all}; BUILD_KERNEL in {<op>, all}. Both default
+    # to "all". The draft tree may not exist on older checkouts — skip missing roles.
+    build_role = os.environ.get("BUILD_ROLE", "all")
     build_kernel = os.environ.get("BUILD_KERNEL", "all")
-    if build_kernel == "all":
-        return [_make_extension(name, spec) for name, spec in KERNELS.items()]
-    if build_kernel not in KERNELS:
-        known = ", ".join(sorted(KERNELS))
-        raise SystemExit(
-            f"Unknown BUILD_KERNEL={build_kernel!r}. Choose one of: {known}, all"
-        )
-    return [_make_extension(build_kernel, KERNELS[build_kernel])]
+
+    roles = ROLES if build_role == "all" else [build_role]
+    if build_role != "all" and build_role not in ROLES:
+        raise SystemExit(f"Unknown BUILD_ROLE={build_role!r}. Choose one of: {', '.join(ROLES)}, all")
+
+    ops = OPS if build_kernel == "all" else [build_kernel]
+    if build_kernel != "all" and build_kernel not in OPS:
+        raise SystemExit(f"Unknown BUILD_KERNEL={build_kernel!r}. Choose one of: {', '.join(OPS)}, all")
+
+    exts: list[CUDAExtension] = []
+    for role in roles:
+        if not (PRODUCTION_KERNELS / role).is_dir():
+            continue
+        exts.extend(_make_extension(role, op) for op in ops)
+    return exts
 
 
 setup(

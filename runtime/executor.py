@@ -10,7 +10,8 @@ from runtime.buffers import RuntimeBuffers
 from runtime.core.config import RuntimeConfig
 from runtime.speculative.types import ForwardMode, MAX_VERIFY_GAMMA, MAX_VERIFY_SEQ_LEN
 
-_ATTN_HEAD_DIM = 128  # fused/decode attention kernels are templated on D=128 (7B)
+# Attention kernels are templated on head_dim per role: target=128 (7B), draft=64 (0.5B).
+_ATTN_HEAD_DIM = {"target": 128, "draft": 64}
 
 
 def _same_device(a: torch.device, b: torch.device) -> bool:
@@ -19,24 +20,26 @@ def _same_device(a: torch.device, b: torch.device) -> bool:
 
 
 def _import_kernels(kernel_set: str = "target"):
-    if kernel_set != "target":
-        raise ValueError(f"unsupported kernel_set: {kernel_set!r} (only 'target' is wired)")
-    from runtime.production_kernels.target.attention import ops as attn_ops
-    from runtime.production_kernels.target.embedding.ops import embedding_forward
-    from runtime.production_kernels.target.residual_ops.ops import (
-        lm_head_forward,
-        residual_add_forward,
-    )
-    from runtime.production_kernels.target.rmsnorm.ops import forward as rmsnorm_forward
-    from runtime.production_kernels.target.swiglu.ops import swiglu_forward
+    if kernel_set not in _ATTN_HEAD_DIM:
+        raise ValueError(
+            f"unsupported kernel_set: {kernel_set!r} (expected one of {sorted(_ATTN_HEAD_DIM)})"
+        )
+    import importlib
+
+    base = f"runtime.production_kernels.{kernel_set}"
+    attn_ops = importlib.import_module(f"{base}.attention.ops")
+    embedding = importlib.import_module(f"{base}.embedding.ops")
+    residual = importlib.import_module(f"{base}.residual_ops.ops")
+    rmsnorm = importlib.import_module(f"{base}.rmsnorm.ops")
+    swiglu = importlib.import_module(f"{base}.swiglu.ops")
 
     return {
         "attn": attn_ops,
-        "embedding_forward": embedding_forward,
-        "rmsnorm_forward": rmsnorm_forward,
-        "residual_add_forward": residual_add_forward,
-        "swiglu_forward": swiglu_forward,
-        "lm_head_forward": lm_head_forward,
+        "embedding_forward": embedding.embedding_forward,
+        "rmsnorm_forward": rmsnorm.forward,
+        "residual_add_forward": residual.residual_add_forward,
+        "swiglu_forward": swiglu.swiglu_forward,
+        "lm_head_forward": residual.lm_head_forward,
     }
 
 
@@ -79,14 +82,19 @@ class Qwen2Executor:
         weights: dict[str, torch.Tensor],
         buffers: RuntimeBuffers,
         *,
-        kernel_set: str = "target",
+        kernel_set: str | None = None,
         use_cuda_graph: bool = False,
     ) -> None:
         cfg.validate()
-        if cfg.head_dim != _ATTN_HEAD_DIM:
+        # Default the kernel set from the config (target=7B, draft=0.5B).
+        kernel_set = kernel_set if kernel_set is not None else cfg.kernel_set
+        expected_head_dim = _ATTN_HEAD_DIM.get(kernel_set)
+        if expected_head_dim is None:
+            raise ValueError(f"unsupported kernel_set: {kernel_set!r}")
+        if cfg.head_dim != expected_head_dim:
             raise ValueError(
-                f"attention kernels require head_dim={_ATTN_HEAD_DIM}; "
-                f"got {cfg.head_dim} ({cfg.name}). Use the 7B config."
+                f"kernel_set={kernel_set!r} attention kernels require head_dim="
+                f"{expected_head_dim}; got {cfg.head_dim} ({cfg.name})."
             )
         if buffers.cfg.name != cfg.name:
             raise ValueError("buffers were allocated for a different config")
@@ -94,6 +102,7 @@ class Qwen2Executor:
             raise ValueError("invalid buffer batch size")
 
         self.cfg = cfg
+        self.kernel_set = kernel_set
         self.weights = weights
         self.buffers = buffers
         self._ops = _import_kernels(kernel_set)

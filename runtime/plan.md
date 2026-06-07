@@ -29,13 +29,13 @@ todos:
     status: completed
   - id: kernel-set-config
     content: Add kernel_set field to YAML + RuntimeConfig (default target); wire executor dynamic import.
-    status: pending
+    status: completed
   - id: update-readme
     content: Update runtime/README.md — Python host, AOT build, target/draft kernel layout.
     status: pending
   - id: cuda-graphs-decode
-    content: "Phase 7/8b: CUDA Graph capture/replay for decode_step + fixed-γ verify_gamma (after eager spec path)."
-    status: pending
+    content: "Phase 7/8b: CUDA Graph capture/replay for decode_step + fixed-γ verify_gamma. DONE for target (1.00x, memory-bound) and draft (1.64x, launch-bound). See graph_plan.md / draft_integration_plan.md."
+    status: completed
   - id: spec-target-verify
     content: "Phase 8a: ForwardMode (PREFILL/VERIFY/DECODE), verify_gamma (small_q_attn), rollback_cache, p1_logits."
     status: completed
@@ -49,8 +49,8 @@ todos:
     content: "Phase 8c: mpi4py coordinator + slurm/run_speculative.sh (2 ranks, 1 GPU each)."
     status: pending
   - id: spec-draft
-    content: "Phase 8d: Draft Qwen2Executor (kernel_set=draft) + γ-loop when production_kernels/draft/ lands."
-    status: pending
+    content: "Phase 8d: Draft Qwen2Executor (kernel_set=draft) + DraftRunner γ-loop + draft CUDA graphs + single-process spec_decode. DONE — see draft_integration_plan.md (greedy spec == target greedy; end-to-end 1.18x)."
+    status: completed
 ---
 
 # Qwen2 Python Host + CUDA Kernels Plan

@@ -4,6 +4,9 @@
 name: qwen2.5-0.5b-instruct
 model_path: models/Qwen2.5-0.5B-Instruct
 
+# Which production_kernels/<role>/ tree the executor uses (head_dim=64 -> draft)
+kernel_set: draft
+
 # Architecture (matches models/Qwen2.5-0.5B-Instruct/config.json)
 hidden_size: 896
 intermediate_size: 4864

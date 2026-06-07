@@ -77,6 +77,14 @@ def target_speculative_step(
             raise ValueError(
                 f"draft_logits must be [γ+1, vocab], got shape {tuple(q_cpu.shape)}"
             )
+        # Vocab alignment: the draft (0.5B) vocab (151936) is a prefix of the target
+        # (7B) vocab (152064). Pad q with -inf on the target-only tail so softmax→0
+        # there; then p and q share an index space for the ratio test and p−q resample.
+        if q_cpu.shape[-1] < p_cpu.shape[-1]:
+            pad = q_cpu.new_full((q_cpu.shape[0], p_cpu.shape[-1] - q_cpu.shape[-1]), float("-inf"))
+            q_cpu = torch.cat([q_cpu, pad], dim=-1)
+        elif q_cpu.shape[-1] > p_cpu.shape[-1]:
+            raise ValueError("draft vocab larger than target vocab — unexpected")
 
         n_accepted, bonus_token = speculative_acceptance(
             p_cpu,

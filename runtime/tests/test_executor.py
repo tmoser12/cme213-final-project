@@ -26,13 +26,17 @@ class TestExecutorStructure(unittest.TestCase):
         cfg = load_7b()
         self.assertEqual(cfg.layer_order, LAYER_ORDER)
 
-    def test_head_dim_gate_for_05b(self) -> None:
+    def test_kernel_set_head_dim_gate(self) -> None:
+        # 0.5b head_dim=64 -> draft kernels; forcing kernel_set="target" (expects
+        # head_dim 128) must raise. (0.5b with its default kernel_set=draft is now
+        # supported — see TestDraftExecutorGpu.)
         cfg = load_05b()
-        self.assertNotEqual(cfg.head_dim, _ATTN_HEAD_DIM)
+        self.assertEqual(cfg.head_dim, _ATTN_HEAD_DIM["draft"])
+        self.assertEqual(cfg.kernel_set, "draft")
         weights = {"model.embed_tokens.weight": torch.empty(1)}
         buffers = allocate_buffers(cfg, batch=1, max_seq_len=8, device="cpu")
         with self.assertRaises(ValueError):
-            Qwen2Executor(cfg, weights, buffers)
+            Qwen2Executor(cfg, weights, buffers, kernel_set="target")
 
 
 @unittest.skipIf(REQUIRES_GPU, GPU_SKIP)

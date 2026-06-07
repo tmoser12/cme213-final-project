@@ -40,6 +40,7 @@ class RuntimeConfig:
     max_seq_len: int
     kv_cache_layout: str
     layer_order: tuple[str, ...]
+    kernel_set: str = "target"  # which production_kernels/<role>/ tree the executor uses
 
     @classmethod
     def from_yaml(cls, path: str | Path, project_root: str | Path | None = None) -> RuntimeConfig:
@@ -73,6 +74,7 @@ class RuntimeConfig:
             max_seq_len=int(data["max_seq_len"]),
             kv_cache_layout=str(data["kv_cache_layout"]),
             layer_order=tuple(data["layer_order"]),
+            kernel_set=str(data.get("kernel_set", "target")),
         )
 
     def validate(self) -> None:
