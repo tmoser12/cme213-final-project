@@ -79,7 +79,7 @@ bash slurm/run_python.sh scripts/verify_env.py
 bash slurm/run_python.sh -m src.kernels.rmsnorm.benchmark
 
 # Pass arguments to your script
-bash slurm/run_python.sh benchmarks/run_baseline.py --model both --trials 3
+bash slurm/run_python.sh runtime/benchmarks/run_baseline.py --model both --trials 3
 
 # Request multiple GPUs or custom resources
 bash slurm/run_python.sh --gpus 2 --time 00:15:00 scripts/my_script.py --flag value

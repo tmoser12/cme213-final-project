@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-benchmarks/run_baseline.py
+runtime/benchmarks/run_baseline.py
 Measure autoregressive greedy decode tokens/sec for
 Qwen2.5-7B-Instruct and Qwen2.5-0.5B-Instruct on a single GPU.
 
@@ -9,7 +9,7 @@ Run via SLURM:
 
 Or interactively:
   srun --partition=gpu-turing --gres=gpu:1 --pty \\
-       python benchmarks/run_baseline.py --model 7b
+       python runtime/benchmarks/run_baseline.py --model 7b
 
 The baseline numbers from this script are the control values for the
 entire project. Record them in results/baseline_<date>.txt.
@@ -24,7 +24,7 @@ from pathlib import Path
 import torch
 
 # Add project root to path so src/ imports work
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.models.loader import load_model
 from src.inference.autoregressive import greedy_decode
@@ -87,7 +87,7 @@ def main():
                         help="Number of measured trials per prompt")
     parser.add_argument(
         "--prompts", type=str,
-        default="benchmarks/prompts/mt_bench_subset.jsonl",
+        default="runtime/benchmarks/prompts/mt_bench_subset.jsonl",
         help="Path to .jsonl prompt file"
     )
     args = parser.parse_args()

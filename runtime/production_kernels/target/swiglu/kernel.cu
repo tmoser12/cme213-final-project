@@ -133,7 +133,7 @@ static void launch_swiglu_act(const at::Half* gate, const at::Half* up,
     int blocks = static_cast<int>(want_blocks < max_blocks ? want_blocks : max_blocks);
     if (blocks < 1) blocks = 1;
 
-    swiglu_act_kernel<<<blocks, threads>>>(
+    swiglu_act_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(gate),
         reinterpret_cast<const __half*>(up),
         reinterpret_cast<__half*>(out),

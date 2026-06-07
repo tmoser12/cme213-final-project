@@ -24,35 +24,44 @@ fi
 export PROJECT_ROOT="$(pwd)"
 
 MODE="local"
+ENTRY="test_mpi.main"
 MPI_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --slurm-cpu) MODE="slurm-cpu"; shift ;;
         --slurm-gpu) MODE="slurm-gpu"; shift ;;
+        --benchmark) ENTRY="test_mpi.benchmark"; shift ;;
         --) shift; MPI_ARGS+=("$@"); break ;;
         *) MPI_ARGS+=("$1"); shift ;;
     esac
 done
 
 if [[ ${#MPI_ARGS[@]} -eq 0 ]]; then
-    MPI_ARGS=(--steps 5 --gamma 4 --seed 42)
+    if [[ "$ENTRY" == "test_mpi.benchmark" ]]; then
+        MPI_ARGS=(--trials 30 --warmup 5)
+    else
+        MPI_ARGS=(--steps 5 --gamma 4 --seed 42)
+    fi
 fi
 
 # GPU SLURM runs always verify distinct cuda:0 / cuda:1 binding.
 if [[ "$MODE" == "slurm-gpu" ]]; then
-    MPI_ARGS=(--require-gpu "${MPI_ARGS[@]}")
+    if [[ "$ENTRY" == "test_mpi.main" ]]; then
+        MPI_ARGS=(--require-gpu "${MPI_ARGS[@]}")
+    fi
 fi
 
-MPI_CMD=(env PYTHONNOUSERSITE=1 mpirun -np 2 python -m test_mpi.main "${MPI_ARGS[@]}")
-SLURM_MPI_CMD=(env PYTHONNOUSERSITE=1 mpirun --oversubscribe -np 2 "${PYTHON_BIN}" -m test_mpi.main "${MPI_ARGS[@]}")
+MPI_CMD=(env PYTHONNOUSERSITE=1 mpirun -np 2 python -m "${ENTRY}" "${MPI_ARGS[@]}")
+SLURM_MPI_CMD=(env PYTHONNOUSERSITE=1 mpirun --oversubscribe -np 2 "${PYTHON_BIN}" -m "${ENTRY}" "${MPI_ARGS[@]}")
 
 module_init() {
     module load course/cme213/nvhpc/24.1 gnu12/12.3.0 2>/dev/null || true
 }
 
 echo "Mode: ${MODE}"
-echo "Args: test_mpi.main ${MPI_ARGS[*]}"
+echo "Entry: ${ENTRY}"
+echo "Args: ${MPI_ARGS[*]}"
 
 case "$MODE" in
     local)

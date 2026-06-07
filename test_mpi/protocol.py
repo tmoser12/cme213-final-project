@@ -115,3 +115,28 @@ def unpack_target_result(buf: np.ndarray) -> TargetResult:
         prefix_len=plen,
         cache_pos_after=cache_after,
     )
+
+
+def target_result_byte_count() -> int:
+    return 4 * np.dtype(np.int32).itemsize
+
+
+def send_target_result(
+    comm,
+    result: TargetResult,
+    dest: int,
+    *,
+    tag: int = TAG_TARGET_RESULT,
+) -> None:
+    comm.Send(pack_target_result(result), dest=dest, tag=tag)
+
+
+def recv_target_result(
+    comm,
+    source: int,
+    *,
+    tag: int = TAG_TARGET_RESULT,
+) -> TargetResult:
+    buf = np.empty(4, dtype=np.int32)
+    comm.Recv(buf, source=source, tag=tag)
+    return unpack_target_result(buf)

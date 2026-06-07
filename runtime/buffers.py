@@ -65,6 +65,15 @@ class RuntimeBuffers:
     rope_sin: torch.Tensor
     cache_position: torch.Tensor
 
+    # --- Static decode-graph scratch (Phase 3) -----------------------------
+    # Fixed-address inputs for the CUDA-graphed S=1 decode forward. Updated in
+    # place before each replay; read by the captured graph. Sub-KB total, so
+    # intentionally excluded from the seq-scaling memory plan / nbytes().
+    static_input_ids: torch.Tensor   # [batch, 1] int64 — the decode token
+    static_cur_len: torch.Tensor     # 0-d int64 — cur_len = cache_position + 1
+    static_cos: torch.Tensor         # [batch, 1, head_dim] — RoPE row for this step
+    static_sin: torch.Tensor
+
     @property
     def kv_head_dim(self) -> int:
         return self.kv_cache_k.shape[-1]
@@ -132,6 +141,16 @@ class RuntimeBuffers:
         sin = sin.unsqueeze(0).expand(self.batch, -1, -1)
         return cos, sin
 
+    def refresh_decode_rope(self, pos: int) -> None:
+        """
+        Copy the RoPE cos/sin row for absolute position ``pos`` into the static
+        decode buffers (S=1). Runs outside the captured region before each replay
+        so the graph reads the correct rotation for the current step.
+        """
+        cos, sin = self.rope_embeddings(pos, 1)
+        self.static_cos.copy_(cos)
+        self.static_sin.copy_(sin)
+
     def swap_hidden(self) -> None:
         """Exchange ping-pong hidden buffers (metadata only, zero GPU cost)."""
         self.hidden_a, self.hidden_b = self.hidden_b, self.hidden_a
@@ -194,6 +213,10 @@ def allocate_buffers(
         rope_cos=rope_cos,
         rope_sin=rope_sin,
         cache_position=torch.zeros((), dtype=torch.int64, device=dev),
+        static_input_ids=torch.zeros((batch, 1), dtype=torch.int64, device=dev),
+        static_cur_len=torch.zeros((), dtype=torch.int64, device=dev),
+        static_cos=_empty((batch, 1, cfg.head_dim), cfg=cfg, device=dev),
+        static_sin=_empty((batch, 1, cfg.head_dim), cfg=cfg, device=dev),
     )
 
 

@@ -101,8 +101,12 @@ __global__ void rope_kv_write_kernel(
     int4*         __restrict__ cache_v4,  // dst V, viewed int4
     const __half* __restrict__ cos,       // [B, S, D]
     const __half* __restrict__ sin,       // [B, S, D]
-    int H_kv, int S, int D, int max_seq, int write_pos
+    int H_kv, int S, int D, int max_seq, int write_pos,
+    const int64_t* __restrict__ write_pos_ptr  // non-null: read write_pos from this device scalar
 ) {
+    // Device-scalar override: when CUDA-graph-captured, write_pos must come from
+    // device memory (a host int would be baked into the graph at capture time).
+    if (write_pos_ptr) write_pos = static_cast<int>(*write_pos_ptr);
     const int bh = blockIdx.x;            // batch * H_kv + kv_head
     const int b  = bh / H_kv;             // batch index (cos/sin shared over heads)
     const int tid = threadIdx.x;
@@ -136,16 +140,12 @@ __global__ void rope_kv_write_kernel(
     }
 }
 
-// RoPE-fused KV write: rotate new_k (rotate_half) and scatter it plus new_v
-// into cache_k/cache_v at [..., write_pos:write_pos+S, :]. This is the single
-// fused op for the K path: rope-on-K happens here, not in a separate pass.
-void rope_kv_write_forward(torch::Tensor new_k,
-                           torch::Tensor new_v,
-                           torch::Tensor cache_k,
-                           torch::Tensor cache_v,
-                           int64_t write_pos,
-                           torch::Tensor cos,
-                           torch::Tensor sin) {
+// Shared tensor-shape/dtype validation for both rope_kv_write launchers (the
+// write_pos value bounds are checked only on the host-int path, since the dev
+// path keeps write_pos on the device and must not sync to read it).
+static void rope_kv_write_check(const torch::Tensor& new_k, const torch::Tensor& new_v,
+                                const torch::Tensor& cache_k, const torch::Tensor& cache_v,
+                                const torch::Tensor& cos, const torch::Tensor& sin) {
     TORCH_CHECK(new_k.is_cuda() && new_v.is_cuda() &&
                 cache_k.is_cuda() && cache_v.is_cuda() &&
                 cos.is_cuda() && sin.is_cuda(),
@@ -177,36 +177,76 @@ void rope_kv_write_forward(torch::Tensor new_k,
     TORCH_CHECK(cos.size(-2) == new_k.size(2) && sin.size(-2) == new_k.size(2),
                 "rope_kv_write: cos/sin seq dim must equal S (the new-token count); "
                 "pass cos/sin sized to the new tokens, not the full sequence");
-    TORCH_CHECK(write_pos >= 0,
-                "rope_kv_write: write_pos must be non-negative");
-    TORCH_CHECK(write_pos + new_k.size(2) <= cache_k.size(2),
-                "rope_kv_write: write_pos + S exceeds cache max_seq_len");
+    TORCH_CHECK(new_k.size(3) % 8 == 0,
+                "rope_kv_write: head_dim must be a multiple of 8 for int4 V copy (got ",
+                new_k.size(3), ")");
+}
 
-    const int B       = static_cast<int>(new_k.size(0));
+// Single launch helper. write_pos is taken from the host int when write_pos_ptr
+// is null, else read from the device scalar inside the kernel.
+static void rope_kv_write_launch(const torch::Tensor& new_k, const torch::Tensor& new_v,
+                                 const torch::Tensor& cache_k, const torch::Tensor& cache_v,
+                                 const torch::Tensor& cos, const torch::Tensor& sin,
+                                 int write_pos, const int64_t* write_pos_ptr) {
     const int H_kv    = static_cast<int>(new_k.size(1));
     const int S       = static_cast<int>(new_k.size(2));
     const int D       = static_cast<int>(new_k.size(3));
     const int max_seq = static_cast<int>(cache_k.size(2));
 
-    TORCH_CHECK(D % 8 == 0,
-                "rope_kv_write: head_dim must be a multiple of 8 for int4 V copy (got ", D, ")");
-
     const int4* new_v4_ptr   = reinterpret_cast<const int4*>(new_v.data_ptr<at::Half>());
     int4*       cache_v4_ptr = reinterpret_cast<int4*>(cache_v.data_ptr<at::Half>());
 
     const int threads = 256;
-    const int blocks  = B * H_kv;
+    const int blocks  = static_cast<int>(new_k.size(0)) * H_kv;
 
-    rope_kv_write_kernel<<<blocks, threads>>>(
+    rope_kv_write_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(new_k.data_ptr<at::Half>()),
         new_v4_ptr,
         reinterpret_cast<__half*>(cache_k.data_ptr<at::Half>()),
         cache_v4_ptr,
         reinterpret_cast<const __half*>(cos.data_ptr<at::Half>()),
         reinterpret_cast<const __half*>(sin.data_ptr<at::Half>()),
-        H_kv, S, D, max_seq, static_cast<int>(write_pos));
+        H_kv, S, D, max_seq, write_pos, write_pos_ptr);
 
     C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// RoPE-fused KV write: rotate new_k (rotate_half) and scatter it plus new_v
+// into cache_k/cache_v at [..., write_pos:write_pos+S, :]. This is the single
+// fused op for the K path: rope-on-K happens here, not in a separate pass.
+void rope_kv_write_forward(torch::Tensor new_k,
+                           torch::Tensor new_v,
+                           torch::Tensor cache_k,
+                           torch::Tensor cache_v,
+                           int64_t write_pos,
+                           torch::Tensor cos,
+                           torch::Tensor sin) {
+    rope_kv_write_check(new_k, new_v, cache_k, cache_v, cos, sin);
+    TORCH_CHECK(write_pos >= 0,
+                "rope_kv_write: write_pos must be non-negative");
+    TORCH_CHECK(write_pos + new_k.size(2) <= cache_k.size(2),
+                "rope_kv_write: write_pos + S exceeds cache max_seq_len");
+    rope_kv_write_launch(new_k, new_v, cache_k, cache_v, cos, sin,
+                         static_cast<int>(write_pos), nullptr);
+}
+
+// Device-scalar variant for CUDA-graph capture: write_pos is a 0-d int64 CUDA
+// tensor read on the device, so replay picks up the current position instead of
+// the value baked in at capture time. Bounds on write_pos are the caller's
+// responsibility (we cannot read the device scalar on the host without a sync).
+void rope_kv_write_forward_dev(torch::Tensor new_k,
+                               torch::Tensor new_v,
+                               torch::Tensor cache_k,
+                               torch::Tensor cache_v,
+                               torch::Tensor write_pos,
+                               torch::Tensor cos,
+                               torch::Tensor sin) {
+    rope_kv_write_check(new_k, new_v, cache_k, cache_v, cos, sin);
+    TORCH_CHECK(write_pos.is_cuda() && write_pos.scalar_type() == torch::kLong &&
+                write_pos.numel() == 1,
+                "rope_kv_write_dev: write_pos must be a 0-d int64 CUDA scalar");
+    rope_kv_write_launch(new_k, new_v, cache_k, cache_v, cos, sin,
+                         0, write_pos.data_ptr<int64_t>());
 }
 
 
@@ -590,7 +630,7 @@ torch::Tensor fused_attn_forward(torch::Tensor q,
     dim3 block(NUM_THREADS);
 
     flash_attention_kernel<Q_block_size, KV_block_size, D, NUM_THREADS, WMMA_M, WMMA_K, WMMA_N>
-        <<<grid, block>>>(
+        <<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
             reinterpret_cast<const __half*>(q.data_ptr<at::Half>()),
             reinterpret_cast<const __half*>(cache_k.data_ptr<at::Half>()),
             reinterpret_cast<const __half*>(cache_v.data_ptr<at::Half>()),
@@ -637,8 +677,12 @@ __global__ void decode_attn_kernel(
     float softmax_scale,
     int h_q, int h_kv, int max_seq, int cur_len,
     const __half* __restrict__ cos,      // [B, Q_TOKENS, D] or nullptr (no RoPE on Q)
-    const __half* __restrict__ sin)      // [B, Q_TOKENS, D] or nullptr
+    const __half* __restrict__ sin,      // [B, Q_TOKENS, D] or nullptr
+    const int64_t* __restrict__ cur_len_ptr)  // non-null: read cur_len from this device scalar
 {
+    // Device-scalar override: under CUDA-graph capture cur_len must come from
+    // device memory (a host int would be frozen into the graph at capture time).
+    if (cur_len_ptr) cur_len = static_cast<int>(*cur_len_ptr);
     // --- Block -> (batch, query head) --------------------------------------
     const int head    = blockIdx.y;
     const int batch   = blockIdx.z;
@@ -775,12 +819,12 @@ __global__ void decode_attn_kernel(
     }
 }
 
-// Shared host-side validation for the two decode launchers (mirrors the
-// fused_attn_forward checks, plus D==128 and cur_len>=S).
+// Shared host-side shape/dtype validation for the decode launchers (mirrors the
+// fused_attn_forward checks, plus D==128). The cur_len>=S bound is checked only
+// on the host-int forwards — the dev path keeps cur_len on the device.
 static void decode_attn_check(const torch::Tensor& q,
                               const torch::Tensor& cache_k,
-                              const torch::Tensor& cache_v,
-                              int64_t cur_len) {
+                              const torch::Tensor& cache_v) {
     TORCH_CHECK(q.is_cuda() && cache_k.is_cuda() && cache_v.is_cuda(),
                 "decode_attn: all tensors must be CUDA");
     TORCH_CHECK(q.is_contiguous() && cache_k.is_contiguous() && cache_v.is_contiguous(),
@@ -799,9 +843,6 @@ static void decode_attn_check(const torch::Tensor& q,
                 "decode_attn: head_dim must be 128 (kernel is templated on D=128)");
     TORCH_CHECK(q.size(1) % cache_k.size(1) == 0,
                 "decode_attn: num_heads must be divisible by num_kv_heads (GQA)");
-    const int64_t S = q.size(2);
-    TORCH_CHECK(cur_len >= S && cur_len <= cache_k.size(2),
-                "decode_attn: cur_len must be in [S, max_seq_len]");
 }
 
 template<int Q_TOKENS>
@@ -811,7 +852,8 @@ static torch::Tensor launch_decode_attn(const torch::Tensor& q,
                                         int64_t cur_len,
                                         double softmax_scale,
                                         const __half* cos_ptr,
-                                        const __half* sin_ptr) {
+                                        const __half* sin_ptr,
+                                        const int64_t* cur_len_ptr) {
     const int B       = q.size(0);
     const int h_q     = q.size(1);
     const int h_kv    = cache_k.size(1);
@@ -826,14 +868,14 @@ static torch::Tensor launch_decode_attn(const torch::Tensor& q,
     dim3 grid(1, h_q, B);            // grid.x reserved for a future split-K
     dim3 block(NUM_THREADS);
 
-    decode_attn_kernel<Q_TOKENS, D, KV_TILE, NUM_THREADS><<<grid, block>>>(
+    decode_attn_kernel<Q_TOKENS, D, KV_TILE, NUM_THREADS><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(q.data_ptr<at::Half>()),
         reinterpret_cast<const __half*>(cache_k.data_ptr<at::Half>()),
         reinterpret_cast<const __half*>(cache_v.data_ptr<at::Half>()),
         reinterpret_cast<__half*>(o.data_ptr<at::Half>()),
         static_cast<float>(softmax_scale),
         h_q, h_kv, max_seq, static_cast<int>(cur_len),
-        cos_ptr, sin_ptr);
+        cos_ptr, sin_ptr, cur_len_ptr);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return o;
 }
@@ -846,7 +888,8 @@ static torch::Tensor dispatch_decode_attn(const torch::Tensor& q,
                                           int64_t cur_len,
                                           double softmax_scale,
                                           const c10::optional<torch::Tensor>& cos,
-                                          const c10::optional<torch::Tensor>& sin) {
+                                          const c10::optional<torch::Tensor>& sin,
+                                          const int64_t* cur_len_ptr = nullptr) {
     // Optional fused RoPE on Q. cos/sin are [B, S, D] at the query rows'
     // absolute positions; nullptr leaves Q un-rotated (pure attention).
     const __half* cos_ptr = nullptr;
@@ -871,14 +914,14 @@ static torch::Tensor dispatch_decode_attn(const torch::Tensor& q,
     }
 
     switch (q.size(2)) {
-        case 1: return launch_decode_attn<1>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
-        case 2: return launch_decode_attn<2>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
-        case 3: return launch_decode_attn<3>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
-        case 4: return launch_decode_attn<4>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
-        case 5: return launch_decode_attn<5>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
-        case 6: return launch_decode_attn<6>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
-        case 7: return launch_decode_attn<7>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
-        case 8: return launch_decode_attn<8>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr);
+        case 1: return launch_decode_attn<1>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
+        case 2: return launch_decode_attn<2>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
+        case 3: return launch_decode_attn<3>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
+        case 4: return launch_decode_attn<4>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
+        case 5: return launch_decode_attn<5>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
+        case 6: return launch_decode_attn<6>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
+        case 7: return launch_decode_attn<7>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
+        case 8: return launch_decode_attn<8>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
     }
     TORCH_CHECK(false, "decode_attn: unsupported S=", q.size(2),
                 " (must be in [1, ", MAX_VERIFY, "])");
@@ -893,10 +936,12 @@ torch::Tensor decode_attn_forward(torch::Tensor q,
                                   double softmax_scale,
                                   c10::optional<torch::Tensor> cos = c10::nullopt,
                                   c10::optional<torch::Tensor> sin = c10::nullopt) {
-    decode_attn_check(q, cache_k, cache_v, cur_len);
+    decode_attn_check(q, cache_k, cache_v);
     TORCH_CHECK(q.size(2) == 1,
                 "decode_attn_forward: expected S==1 (single-token decode); got S=",
                 q.size(2), " — use small_q_attn_forward for verify batches");
+    TORCH_CHECK(cur_len >= q.size(2) && cur_len <= cache_k.size(2),
+                "decode_attn: cur_len must be in [S, max_seq_len]");
     return dispatch_decode_attn(q, cache_k, cache_v, cur_len, softmax_scale, cos, sin);
 }
 
@@ -908,11 +953,55 @@ torch::Tensor small_q_attn_forward(torch::Tensor q,
                                    double softmax_scale,
                                    c10::optional<torch::Tensor> cos = c10::nullopt,
                                    c10::optional<torch::Tensor> sin = c10::nullopt) {
-    decode_attn_check(q, cache_k, cache_v, cur_len);
+    decode_attn_check(q, cache_k, cache_v);
     const int64_t S = q.size(2);
     TORCH_CHECK(S >= 1 && S <= MAX_VERIFY,
                 "small_q_attn_forward: S must be in [1, ", MAX_VERIFY, "]; got ", S);
+    TORCH_CHECK(cur_len >= S && cur_len <= cache_k.size(2),
+                "decode_attn: cur_len must be in [S, max_seq_len]");
     return dispatch_decode_attn(q, cache_k, cache_v, cur_len, softmax_scale, cos, sin);
+}
+
+// Device-scalar variants for CUDA-graph capture: cur_len is a 0-d int64 CUDA
+// tensor read on the device, so replay attends over the current sequence length
+// instead of the value baked in at capture time. S (query length) stays a host
+// shape (fixed across replays); only cur_len varies. Bounds on cur_len are the
+// caller's responsibility (cannot read the device scalar without a sync).
+static void check_cur_len_dev(const torch::Tensor& cur_len) {
+    TORCH_CHECK(cur_len.is_cuda() && cur_len.scalar_type() == torch::kLong &&
+                cur_len.numel() == 1,
+                "decode_attn_dev: cur_len must be a 0-d int64 CUDA scalar");
+}
+
+torch::Tensor decode_attn_forward_dev(torch::Tensor q,
+                                      torch::Tensor cache_k,
+                                      torch::Tensor cache_v,
+                                      torch::Tensor cur_len,
+                                      double softmax_scale,
+                                      c10::optional<torch::Tensor> cos = c10::nullopt,
+                                      c10::optional<torch::Tensor> sin = c10::nullopt) {
+    decode_attn_check(q, cache_k, cache_v);
+    TORCH_CHECK(q.size(2) == 1,
+                "decode_attn_forward_dev: expected S==1; got S=", q.size(2));
+    check_cur_len_dev(cur_len);
+    return dispatch_decode_attn(q, cache_k, cache_v, 0, softmax_scale, cos, sin,
+                                cur_len.data_ptr<int64_t>());
+}
+
+torch::Tensor small_q_attn_forward_dev(torch::Tensor q,
+                                       torch::Tensor cache_k,
+                                       torch::Tensor cache_v,
+                                       torch::Tensor cur_len,
+                                       double softmax_scale,
+                                       c10::optional<torch::Tensor> cos = c10::nullopt,
+                                       c10::optional<torch::Tensor> sin = c10::nullopt) {
+    decode_attn_check(q, cache_k, cache_v);
+    const int64_t S = q.size(2);
+    TORCH_CHECK(S >= 1 && S <= MAX_VERIFY,
+                "small_q_attn_forward_dev: S must be in [1, ", MAX_VERIFY, "]; got ", S);
+    check_cur_len_dev(cur_len);
+    return dispatch_decode_attn(q, cache_k, cache_v, 0, softmax_scale, cos, sin,
+                                cur_len.data_ptr<int64_t>());
 }
 
 // 5. Output projection: y = x @ W_o^T  (no bias; matches Qwen2 o_proj).
