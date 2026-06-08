@@ -19,6 +19,7 @@ does not initialize MPI. Launch with `slurm/run_speculative.sh` (mpirun -np 2).
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import sys
 
@@ -65,19 +66,25 @@ def _load_executor(cfg: RuntimeConfig, device: torch.device, *, use_cuda_graph: 
     return Qwen2Executor(cfg, weights, buffers, use_cuda_graph=use_cuda_graph)
 
 
-def _target_loop(comm, args, draft_vocab: int) -> list[int]:
-    device = _bind_device(TARGET_RANK)
-    cfg = RuntimeConfig.from_yaml(CONFIG_7B)
-    target = _load_executor(cfg, device, use_cuda_graph=False, max_seq_len=args.max_seq)
-    rng = random.Random(args.seed + TARGET_RANK)
-
-    prompt = torch.tensor([args.prompt], dtype=torch.int64, device=device)
+def _target_case(
+    comm,
+    *,
+    target: Qwen2Executor,
+    rng: random.Random,
+    prompt_tokens: list[int],
+    gamma: int,
+    steps: int,
+    draft_vocab: int,
+    log_endpoints: bool = True,
+) -> tuple[list[int], list[int]]:
+    prompt = torch.tensor([prompt_tokens], dtype=torch.int64, device=target.device)
     target.prefill(prompt)
 
-    committed = list(args.prompt)
-    for step in range(args.steps):
-        payload = recv_draft_payload(comm, source=DRAFT_RANK, gamma=args.gamma, vocab=draft_vocab)
-        draft_ids = torch.tensor(payload.draft_token_ids, dtype=torch.int64, device=device)
+    committed = list(prompt_tokens)
+    accepted_counts: list[int] = []
+    for step in range(steps):
+        payload = recv_draft_payload(comm, source=DRAFT_RANK, gamma=gamma, vocab=draft_vocab)
+        draft_ids = torch.tensor(payload.draft_token_ids, dtype=torch.int64, device=target.device)
         draft_logits = torch.from_numpy(payload.draft_logits)  # CPU fp16 [γ+1, vocab]
 
         result = target_speculative_step(target, draft_ids, draft_logits, rng)
@@ -88,26 +95,31 @@ def _target_loop(comm, args, draft_vocab: int) -> list[int]:
             dest=DRAFT_RANK,
         )
         committed += payload.draft_token_ids[: result.n_accepted] + [result.bonus_token]
-        if step in (0, args.steps - 1):
-            print(f"[target step {step}] accepted={result.n_accepted}/{args.gamma} "
+        accepted_counts.append(result.n_accepted)
+        if log_endpoints and step in (0, steps - 1):
+            print(f"[target step {step}] accepted={result.n_accepted}/{gamma} "
                   f"bonus={result.bonus_token} cache_pos={target.cache_pos}", flush=True)
 
     flush_pending_bonus(target)
-    return committed
+    return committed, accepted_counts
 
 
-def _draft_loop(comm, args) -> list[int]:
-    device = _bind_device(DRAFT_RANK)
-    cfg = RuntimeConfig.from_yaml(CONFIG_05B)
-    draft_ex = _load_executor(cfg, device, use_cuda_graph=True, max_seq_len=args.max_seq)
-    draft = DraftRunner(draft_ex, seed=args.seed + DRAFT_RANK)
-
-    prompt = torch.tensor([args.prompt], dtype=torch.int64, device=device)
+def _draft_case(
+    comm,
+    *,
+    draft: DraftRunner,
+    prompt_tokens: list[int],
+    gamma: int,
+    steps: int,
+    greedy: bool,
+    log_endpoints: bool = True,
+) -> list[int]:
+    prompt = torch.tensor([prompt_tokens], dtype=torch.int64, device=draft.executor.device)
     draft.prefill(prompt)
 
-    committed = list(args.prompt)
-    for step in range(args.steps):
-        draft_ids_t, q_logits_t = draft.generate_drafts(args.gamma, greedy=args.greedy)
+    committed = list(prompt_tokens)
+    for step in range(steps):
+        draft_ids_t, q_logits_t = draft.generate_drafts(gamma, greedy=greedy)
         ids = draft_ids_t[0].cpu().numpy().astype(np.int64).tolist()
         q = q_logits_t.detach().to("cpu", torch.float16).numpy()
         send_draft_payload(comm, DraftPayload(draft_token_ids=ids, draft_logits=q), dest=TARGET_RANK)
@@ -115,8 +127,8 @@ def _draft_loop(comm, args) -> list[int]:
         result = recv_target_result(comm, source=TARGET_RANK)
         committed += ids[: result.n_accepted] + [result.bonus_token]
         draft.apply_target_feedback(result.n_accepted, result.bonus_token)
-        if step in (0, args.steps - 1):
-            print(f"[draft step {step}] accepted={result.n_accepted}/{args.gamma} "
+        if log_endpoints and step in (0, steps - 1):
+            print(f"[draft step {step}] accepted={result.n_accepted}/{gamma} "
                   f"bonus={result.bonus_token} prefix_len={draft.prefix_len}", flush=True)
 
     return committed
@@ -129,6 +141,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max-seq", type=int, default=512, dest="max_seq")
     p.add_argument("--greedy", action="store_true", help="argmax draft sampling")
+    p.add_argument("--benchmark-json", action="store_true", help="Emit machine-readable benchmark summary on rank 0")
+    p.add_argument(
+        "--benchmark-suite-json",
+        type=str,
+        default="",
+        help="Path to benchmark suite JSON (multiple prompt/trial cases in one persistent MPI run)",
+    )
     p.add_argument("--prompt", type=int, nargs="*", default=DEFAULT_PROMPT)
     return p.parse_args(argv)
 
@@ -149,22 +168,172 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     draft_vocab = RuntimeConfig.from_yaml(CONFIG_05B).vocab_size
+    target = None
+    draft = None
     if rank == TARGET_RANK:
-        committed = _target_loop(comm, args, draft_vocab)
+        target = _load_executor(
+            RuntimeConfig.from_yaml(CONFIG_7B),
+            _bind_device(TARGET_RANK),
+            use_cuda_graph=True,
+            max_seq_len=args.max_seq,
+        )
     else:
-        committed = _draft_loop(comm, args)
+        draft_ex = _load_executor(
+            RuntimeConfig.from_yaml(CONFIG_05B),
+            _bind_device(DRAFT_RANK),
+            use_cuda_graph=True,
+            max_seq_len=args.max_seq,
+        )
+        draft = DraftRunner(draft_ex, seed=args.seed + DRAFT_RANK)
 
-    comm.Barrier()
-    all_committed = comm.gather(committed, root=TARGET_RANK)
-    if rank == TARGET_RANK:
-        target_seq, draft_seq = committed, all_committed[DRAFT_RANK]
-        if target_seq != draft_seq:
-            print(f"error: committed-sequence mismatch\n  target={target_seq}\n  draft={draft_seq}",
-                  file=sys.stderr)
-            return 2
-        n_new = len(committed) - len(args.prompt)
-        print(f"OK: {args.steps} iters, γ={args.gamma}, generated {n_new} tokens "
-              f"({n_new / args.steps:.2f}/iter), draft+target sequences match.", flush=True)
+    if args.benchmark_suite_json:
+        with open(args.benchmark_suite_json, "r", encoding="utf-8") as f:
+            suite = json.loads(f.read())
+        cases = suite.get("cases", [])
+        if not cases:
+            if rank == TARGET_RANK:
+                print("error: benchmark suite has no cases", file=sys.stderr)
+            return 1
+
+        for idx, case in enumerate(cases):
+            prompt_tokens = [int(x) for x in case["prompt"]]
+            steps = int(case["steps"])
+            seed = int(case["seed"])
+            t0 = MPI.Wtime()
+            if rank == TARGET_RANK:
+                committed, accepted_counts = _target_case(
+                    comm,
+                    target=target,
+                    rng=random.Random(seed + TARGET_RANK),
+                    prompt_tokens=prompt_tokens,
+                    gamma=args.gamma,
+                    steps=steps,
+                    draft_vocab=draft_vocab,
+                    log_endpoints=False,
+                )
+            else:
+                committed = _draft_case(
+                    comm,
+                    draft=draft,
+                    prompt_tokens=prompt_tokens,
+                    gamma=args.gamma,
+                    steps=steps,
+                    greedy=args.greedy,
+                    log_endpoints=False,
+                )
+            comm.Barrier()
+            t1 = MPI.Wtime()
+            all_committed = comm.gather(committed, root=TARGET_RANK)
+            if rank == TARGET_RANK:
+                if committed != all_committed[DRAFT_RANK]:
+                    print(
+                        f"error: committed-sequence mismatch in suite case {idx}",
+                        file=sys.stderr,
+                    )
+                    return 2
+                n_new = len(committed) - len(prompt_tokens)
+                elapsed_s = max(t1 - t0, 1e-9)
+                accepted_total = sum(accepted_counts)
+                accept_per_iter = accepted_total / steps if steps else 0.0
+                accept_ratio = accept_per_iter / args.gamma if args.gamma else 0.0
+                tokens_per_s = n_new / elapsed_s
+                print(
+                    f"OK(case {idx}): steps={steps}, γ={args.gamma}, n_new={n_new}, "
+                    f"tok/s={tokens_per_s:.2f}, acc={accept_per_iter:.2f}/{args.gamma}",
+                    flush=True,
+                )
+                if args.benchmark_json:
+                    print(
+                        "BENCHMARK_JSON: "
+                        + json.dumps(
+                            {
+                                "case_index": idx,
+                                "prompt_id": case.get("prompt_id", f"case_{idx}"),
+                                "category": case.get("category", "unknown"),
+                                "prompt_len": len(prompt_tokens),
+                                "trial_idx": int(case.get("trial_idx", 0)),
+                                "steps": steps,
+                                "gamma": args.gamma,
+                                "n_generated": n_new,
+                                "elapsed_s": elapsed_s,
+                                "tokens_per_s": tokens_per_s,
+                                "ms_per_token": 1000.0 * elapsed_s / max(n_new, 1),
+                                "accepted_total": accepted_total,
+                                "accept_per_iter": accept_per_iter,
+                                "accept_ratio": accept_ratio,
+                                "tokens_per_iter": (n_new / steps) if steps else 0.0,
+                                "iters_per_token": (steps / n_new) if n_new else 0.0,
+                                "target_cuda_graph": True,
+                                "draft_cuda_graph": True,
+                            }
+                        ),
+                        flush=True,
+                    )
+    else:
+        t0 = MPI.Wtime()
+        if rank == TARGET_RANK:
+            committed, accepted_counts = _target_case(
+                comm,
+                target=target,
+                rng=random.Random(args.seed + TARGET_RANK),
+                prompt_tokens=args.prompt,
+                gamma=args.gamma,
+                steps=args.steps,
+                draft_vocab=draft_vocab,
+                log_endpoints=True,
+            )
+        else:
+            committed = _draft_case(
+                comm,
+                draft=draft,
+                prompt_tokens=args.prompt,
+                gamma=args.gamma,
+                steps=args.steps,
+                greedy=args.greedy,
+                log_endpoints=True,
+            )
+
+        comm.Barrier()
+        t1 = MPI.Wtime()
+        all_committed = comm.gather(committed, root=TARGET_RANK)
+        if rank == TARGET_RANK:
+            target_seq, draft_seq = committed, all_committed[DRAFT_RANK]
+            if target_seq != draft_seq:
+                print(f"error: committed-sequence mismatch\n  target={target_seq}\n  draft={draft_seq}",
+                      file=sys.stderr)
+                return 2
+            n_new = len(committed) - len(args.prompt)
+            elapsed_s = max(t1 - t0, 1e-9)
+            accepted_total = sum(accepted_counts)
+            accept_per_iter = accepted_total / args.steps if args.steps else 0.0
+            accept_ratio = accept_per_iter / args.gamma if args.gamma else 0.0
+            tokens_per_s = n_new / elapsed_s
+            print(f"OK: {args.steps} iters, γ={args.gamma}, generated {n_new} tokens "
+                  f"({n_new / args.steps:.2f}/iter), draft+target sequences match. "
+                  f"tok/s={tokens_per_s:.2f}, acc={accept_per_iter:.2f}/{args.gamma}",
+                  flush=True)
+            if args.benchmark_json:
+                print(
+                    "BENCHMARK_JSON: "
+                    + json.dumps(
+                        {
+                            "steps": args.steps,
+                            "gamma": args.gamma,
+                            "n_generated": n_new,
+                            "elapsed_s": elapsed_s,
+                            "tokens_per_s": tokens_per_s,
+                            "ms_per_token": 1000.0 * elapsed_s / max(n_new, 1),
+                            "accepted_total": accepted_total,
+                            "accept_per_iter": accept_per_iter,
+                            "accept_ratio": accept_ratio,
+                            "tokens_per_iter": (n_new / args.steps) if args.steps else 0.0,
+                            "iters_per_token": (args.steps / n_new) if n_new else 0.0,
+                            "target_cuda_graph": True,
+                            "draft_cuda_graph": True,
+                        }
+                    ),
+                    flush=True,
+                )
     return 0
 
 

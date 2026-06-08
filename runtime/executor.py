@@ -182,7 +182,8 @@ class Qwen2Executor(GraphExecutorMixin):
             [self._pending_bonus], dtype=torch.int64, device=self.device
         )
         self._pending_bonus = None
-        logits = self.decode_step(token_id)
+        decode = self.decode_step_graph if self.use_cuda_graph else self.decode_step
+        logits = decode(token_id)
         self._p1_logits = logits[0, 0, :].detach()
         return logits
 

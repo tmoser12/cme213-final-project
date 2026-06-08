@@ -51,7 +51,8 @@ def _greedy_target_step(target: Qwen2Executor, draft_ids: torch.Tensor) -> tuple
     prefix = target.cache_pos
     rollback_base = prefix + (1 if leading_bonus is not None else 0)
 
-    p = target.verify_gamma(draft_ids, leading_bonus=leading_bonus)  # [1, S, vocab]
+    verify = target.verify_gamma_graph if target.use_cuda_graph else target.verify_gamma
+    p = verify(draft_ids, leading_bonus=leading_bonus)  # [1, S, vocab]
     if leading_bonus is not None:
         p_rows = p[0]                                                # p_1..p_{γ+1}
     else:

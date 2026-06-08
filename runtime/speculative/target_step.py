@@ -58,7 +58,8 @@ def target_speculative_step(
     rollback_base = prefix_len + (1 if leading_bonus is not None else 0)
 
     with torch.no_grad():
-        p_verify = executor.verify_gamma(
+        verify = executor.verify_gamma_graph if executor.use_cuda_graph else executor.verify_gamma
+        p_verify = verify(
             draft_token_ids,
             leading_bonus=leading_bonus,
         )
