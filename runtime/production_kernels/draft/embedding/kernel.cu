@@ -8,6 +8,7 @@
 // Pure gather: output is bit-exact equal to the PyTorch reference.
 
 #include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>    // at::cuda::getCurrentCUDAStream
 #include <c10/cuda/CUDAException.h>   // C10_CUDA_KERNEL_LAUNCH_CHECK
 #include <cuda_fp16.h>
 #include <cstdint>
@@ -64,7 +65,7 @@ torch::Tensor embedding_forward(torch::Tensor input_ids, torch::Tensor weight) {
     if (N == 0) return output;
 
     const int threads = 128;
-    embedding_kernel<<<static_cast<unsigned int>(N), threads>>>(
+    embedding_kernel<<<static_cast<unsigned int>(N), threads, 0, at::cuda::getCurrentCUDAStream()>>>(
         input_ids.data_ptr<int64_t>(),
         reinterpret_cast<const __half*>(weight.data_ptr<at::Half>()),
         reinterpret_cast<__half*>(output.data_ptr<at::Half>()),

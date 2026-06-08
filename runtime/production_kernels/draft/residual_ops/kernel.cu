@@ -90,7 +90,7 @@ static void launch_residual_add(const at::Half* a, const at::Half* b,
     int blocks = static_cast<int>(want_blocks < max_blocks ? want_blocks : max_blocks);
     if (blocks < 1) blocks = 1;
 
-    residual_add_kernel<<<blocks, threads>>>(
+    residual_add_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(a),
         reinterpret_cast<const __half*>(b),
         reinterpret_cast<__half*>(out),

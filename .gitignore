@@ -9,6 +9,8 @@ setup.sh
 # Ai stuff
 CLAUDE.md
 .claude/*
+*.tex
+*.png
 
 # mac stuff
 src/.DS_Store

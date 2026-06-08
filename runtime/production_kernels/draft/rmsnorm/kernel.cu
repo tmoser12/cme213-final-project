@@ -1,4 +1,5 @@
 #include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>    // at::cuda::getCurrentCUDAStream
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -151,7 +152,7 @@ torch::Tensor rmsnorm_forward(torch::Tensor input, torch::Tensor weight, float e
     if (num_threads > 1024) num_threads = 1024;
     if (num_threads < 32)   num_threads = 32;
     
-    rmsnorm_forward_kernel_vectorized<<<num_blocks, num_threads>>>(
+    rmsnorm_forward_kernel_vectorized<<<num_blocks, num_threads, 0, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const half*>(input.data_ptr<at::Half>()),
         reinterpret_cast<const half*>(weight.data_ptr<at::Half>()),
         reinterpret_cast<half*>(output.data_ptr<at::Half>()),

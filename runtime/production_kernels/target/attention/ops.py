@@ -36,6 +36,11 @@ def rope_kv_write_forward(new_k, new_v, cache_k, cache_v, write_pos, cos, sin):
     _load_ext().rope_kv_write_forward(new_k, new_v, cache_k, cache_v, write_pos, cos, sin)
 
 
+def rope_kv_write_forward_dev(new_k, new_v, cache_k, cache_v, write_pos, cos, sin):
+    """write_pos is a 0-d int64 CUDA tensor (read on device) — for CUDA-graph capture."""
+    _load_ext().rope_kv_write_forward_dev(new_k, new_v, cache_k, cache_v, write_pos, cos, sin)
+
+
 def fused_attn_forward(
     q,
     cache_k,
@@ -74,6 +79,36 @@ def small_q_attn_forward(
     sin: Optional[torch.Tensor] = None,
 ):
     return _load_ext().small_q_attn_forward(
+        q, cache_k, cache_v, cur_len, softmax_scale, cos, sin
+    )
+
+
+def decode_attn_forward_dev(
+    q,
+    cache_k,
+    cache_v,
+    cur_len,
+    softmax_scale,
+    cos: Optional[torch.Tensor] = None,
+    sin: Optional[torch.Tensor] = None,
+):
+    """cur_len is a 0-d int64 CUDA tensor (read on device) — for CUDA-graph capture."""
+    return _load_ext().decode_attn_forward_dev(
+        q, cache_k, cache_v, cur_len, softmax_scale, cos, sin
+    )
+
+
+def small_q_attn_forward_dev(
+    q,
+    cache_k,
+    cache_v,
+    cur_len,
+    softmax_scale,
+    cos: Optional[torch.Tensor] = None,
+    sin: Optional[torch.Tensor] = None,
+):
+    """cur_len is a 0-d int64 CUDA tensor (read on device) — for CUDA-graph capture."""
+    return _load_ext().small_q_attn_forward_dev(
         q, cache_k, cache_v, cur_len, softmax_scale, cos, sin
     )
 

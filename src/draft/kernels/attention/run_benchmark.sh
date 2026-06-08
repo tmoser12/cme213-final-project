@@ -87,7 +87,7 @@ case "$TARGET" in
     benchmark)            KERNEL_REGEX="rope_kv_write_kernel|flash_attention_kernel" ;;
     benchmark_rope_kv_write) KERNEL_REGEX="rope_kv_write_kernel" ;;
     benchmark_fused_attn) KERNEL_REGEX="flash_attention_kernel" ;;
-    benchmark_decode_attn) KERNEL_REGEX="decode_attn_kernel" ;;
+    benchmark_decode_attn) KERNEL_REGEX="decode_attn_split_kernel|decode_attn_combine_kernel|decode_attn_kernel" ;;
     benchmark_qkv_proj|benchmark_o_proj) KERNEL_REGEX="" ;;
     *)                    KERNEL_REGEX=".*" ;;
 esac
@@ -115,6 +115,11 @@ if [ -z "$KERNEL_REGEX" ]; then
 else
     if [ "$TARGET" = "benchmark" ]; then
         NCU_SCOPE=(--profile-from-start off --launch-count 3)
+    elif [ "$TARGET" = "benchmark_decode_attn" ]; then
+        # Decode emits TWO kernels per call (split + combine) on the split-KV path,
+        # so skip the 5 warmup iters (10 kernels) and capture both kernels of the
+        # measured launch. Short-context configs fall back to decode_attn_kernel.
+        NCU_SCOPE=(--launch-skip 10 --launch-count 2)
     else
         NCU_SCOPE=(--launch-skip 5 --launch-count 1)
     fi

@@ -1,8 +1,7 @@
-"""Tests for attention AOT kernels (Phase 3).
+"""Tests for target attention AOT kernel integration (Phase 3).
 
-The fused/decode kernels are templated per suite: ``target`` on head_dim=128 (7B),
-``draft`` on head_dim=64 (0.5B). Each GPU test is a config-driven base mixin with a
-7B (target) and 0.5B (draft) concrete subclass; dims come from the loaded config.
+Attention fused/decode kernels are templated on head_dim=128 (7B). Tests use
+CONFIG_7B dimensions throughout.
 """
 
 from __future__ import annotations
@@ -17,12 +16,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.models.qwen2.modeling_qwen2 import apply_rotary_pos_emb, repeat_kv
 
-from runtime.core.config import CONFIG_05B, CONFIG_7B, RuntimeConfig
+from runtime.core.config import CONFIG_7B, RuntimeConfig
 from runtime.core.weights import load_weights
-import runtime.production_kernels.target.attention.ops as target_attn
-import runtime.production_kernels.draft.attention.ops as draft_attn
+from runtime.production_kernels.target.attention import (
+    decode_attn_forward,
+    fused_attn_forward,
+    o_proj_forward,
+    qkv_proj_forward,
+    rope_kv_write_forward,
+    small_q_attn_forward,
+)
 from runtime.production_kernels.target.attention.ops import EXTENSION_MODULE
-from runtime.production_kernels.draft.attention.ops import EXTENSION_MODULE as DRAFT_EXTENSION_MODULE
 
 PROJECT_ROOT = os.environ.get(
     "PROJECT_ROOT", "/home/cme213/tobiascm/cme213-final-project"
@@ -31,7 +35,7 @@ REQUIRES_GPU = not torch.cuda.is_available()
 GPU_SKIP = "CUDA not available — run via slurm/run_tests_gpu.sh"
 
 
-def _attn_dims(cfg: RuntimeConfig):
+def _qwen7b_attn_dims(cfg: RuntimeConfig):
     nh = cfg.num_attention_heads
     nkv = cfg.num_key_value_heads
     d = cfg.head_dim
@@ -44,43 +48,30 @@ def _attn_dims(cfg: RuntimeConfig):
 
 
 class TestAttentionAot(unittest.TestCase):
-    _OPS = (
-        "qkv_proj_forward",
-        "rope_kv_write_forward",
-        "fused_attn_forward",
-        "decode_attn_forward",
-        "small_q_attn_forward",
-        "o_proj_forward",
-    )
-
-    def _assert_importable(self, module: str, role: str) -> None:
-        ext = importlib.import_module(module)
-        for name in self._OPS:
+    def test_prebuilt_extension_importable(self) -> None:
+        ext = importlib.import_module(EXTENSION_MODULE)
+        for name in (
+            "qkv_proj_forward",
+            "rope_kv_write_forward",
+            "fused_attn_forward",
+            "decode_attn_forward",
+            "small_q_attn_forward",
+            "o_proj_forward",
+        ):
             self.assertTrue(hasattr(ext, name), msg=name)
         self.assertNotIn("torch_extensions", ext.__file__)
-        self.assertIn(f"production_kernels/{role}/attention", ext.__file__.replace("\\", "/"))
-
-    def test_target_extension_importable(self) -> None:
-        self._assert_importable(EXTENSION_MODULE, "target")
-
-    def test_draft_extension_importable(self) -> None:
-        self._assert_importable(DRAFT_EXTENSION_MODULE, "draft")
+        self.assertIn(
+            "production_kernels/target/attention", ext.__file__.replace("\\", "/")
+        )
 
 
-# --- per-sub-op base mixins (config + kernel suite supplied by concrete class) ---
-
-
-class _AttnGpuBase:
-    CONFIG_PATH: object = None
-    ATTN: object = None
-
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+class TestQkvProjGpu(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.cfg = RuntimeConfig.from_yaml(cls.CONFIG_PATH, project_root=PROJECT_ROOT)
-        (cls.h, cls.nh, cls.nkv, cls.d, cls.hq, cls.hkv, cls.scale, cls.groups) = _attn_dims(cls.cfg)
+        cls.cfg = RuntimeConfig.from_yaml(CONFIG_7B, project_root=PROJECT_ROOT)
+        cls.h, cls.nh, cls.nkv, cls.d, cls.hq, cls.hkv, _, _ = _qwen7b_attn_dims(cls.cfg)
 
-
-class _QkvProjBase(_AttnGpuBase):
     def test_matches_eager_qkv(self) -> None:
         q_proj = nn.Linear(self.h, self.hq, bias=True).cuda().half()
         k_proj = nn.Linear(self.h, self.hkv, bias=True).cuda().half()
@@ -92,14 +83,20 @@ class _QkvProjBase(_AttnGpuBase):
             x = torch.randn(batch * seq, self.h, dtype=torch.float16, device="cuda")
             with torch.no_grad():
                 expected = torch.cat([q_proj(x), k_proj(x), v_proj(x)], dim=-1)
-                actual = self.ATTN.qkv_proj_forward(x, w_qkv, b_qkv)
+                actual = qkv_proj_forward(x, w_qkv, b_qkv)
             self.assertTrue(
                 torch.allclose(expected, actual, atol=0.5, rtol=0),
                 msg=f"B={batch} S={seq}",
             )
 
 
-class _RopeKvWriteBase(_AttnGpuBase):
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+class TestRopeKvWriteGpu(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cfg = RuntimeConfig.from_yaml(CONFIG_7B, project_root=PROJECT_ROOT)
+        _, _, cls.nkv, cls.d, _, _, _, _ = _qwen7b_attn_dims(cls.cfg)
+
     def _make_inputs(self, batch, seq_len):
         max_seq = 2048
         new_k = torch.randn(batch, self.nkv, seq_len, self.d, dtype=torch.float16, device="cuda")
@@ -121,7 +118,7 @@ class _RopeKvWriteBase(_AttnGpuBase):
                 _, k_rot = apply_rotary_pos_emb(new_k, new_k, cos, sin)
                 cache_k_ref[:, :, write_pos : write_pos + seq, :] = k_rot
                 cache_v_ref[:, :, write_pos : write_pos + seq, :] = new_v
-                self.ATTN.rope_kv_write_forward(
+                rope_kv_write_forward(
                     new_k, new_v, cache_k_cust, cache_v_cust, write_pos, cos, sin
                 )
             self.assertTrue(
@@ -134,7 +131,13 @@ class _RopeKvWriteBase(_AttnGpuBase):
             )
 
 
-class _FusedAttnBase(_AttnGpuBase):
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+class TestFusedAttnGpu(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cfg = RuntimeConfig.from_yaml(CONFIG_7B, project_root=PROJECT_ROOT)
+        _, cls.nh, cls.nkv, cls.d, _, _, cls.scale, cls.groups = _qwen7b_attn_dims(cls.cfg)
+
     def _eager_prefill(self, q, cache_k, cache_v, cur_len):
         k_live = cache_k[:, :, :cur_len, :]
         v_live = cache_v[:, :, :cur_len, :]
@@ -153,14 +156,20 @@ class _FusedAttnBase(_AttnGpuBase):
             cache_v[:, :, :seq, :] = torch.randn_like(cache_v[:, :, :seq, :])
             with torch.no_grad():
                 expected = self._eager_prefill(q, cache_k, cache_v, seq)
-                actual = self.ATTN.fused_attn_forward(q, cache_k, cache_v, seq, self.scale)
+                actual = fused_attn_forward(q, cache_k, cache_v, seq, self.scale)
             self.assertTrue(
                 torch.allclose(expected, actual, atol=1e-2, rtol=1e-2),
                 msg=f"B={batch} S={seq}",
             )
 
 
-class _DecodeAttnBase(_AttnGpuBase):
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+class TestDecodeAttnGpu(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cfg = RuntimeConfig.from_yaml(CONFIG_7B, project_root=PROJECT_ROOT)
+        _, cls.nh, cls.nkv, cls.d, _, _, cls.scale, cls.groups = _qwen7b_attn_dims(cls.cfg)
+
     def _causal_mask(self, seq_len, cur_len, device):
         q_pos = torch.arange(cur_len - seq_len, cur_len, device=device).view(seq_len, 1)
         k_pos = torch.arange(cur_len, device=device).view(1, cur_len)
@@ -182,7 +191,7 @@ class _DecodeAttnBase(_AttnGpuBase):
             cache_v = torch.randn(batch, self.nkv, cur_len + pad, self.d, dtype=torch.float16, device="cuda")
             with torch.no_grad():
                 expected = self._eager_decode(q, cache_k, cache_v, cur_len)
-                actual = self.ATTN.decode_attn_forward(q, cache_k, cache_v, cur_len, self.scale)
+                actual = decode_attn_forward(q, cache_k, cache_v, cur_len, self.scale)
             self.assertTrue(
                 torch.allclose(expected, actual, atol=1e-2, rtol=1e-2),
                 msg=f"B={batch} history={history}",
@@ -197,79 +206,28 @@ class _DecodeAttnBase(_AttnGpuBase):
         cache_v = torch.randn(batch, self.nkv, cur_len + pad, self.d, dtype=torch.float16, device="cuda")
         with torch.no_grad():
             expected = self._eager_decode(q, cache_k, cache_v, cur_len)
-            actual = self.ATTN.small_q_attn_forward(q, cache_k, cache_v, cur_len, self.scale)
+            actual = small_q_attn_forward(q, cache_k, cache_v, cur_len, self.scale)
         self.assertTrue(torch.allclose(expected, actual, atol=1e-2, rtol=1e-2))
 
 
-class _OProjBase(_AttnGpuBase):
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+class TestOProjGpu(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cfg = RuntimeConfig.from_yaml(CONFIG_7B, project_root=PROJECT_ROOT)
+        cls.h, _, _, _, cls.hq, _, _, _ = _qwen7b_attn_dims(cls.cfg)
+
     def test_o_proj(self) -> None:
         linear = nn.Linear(self.hq, self.h, bias=False).cuda().half()
         for batch, seq in [(1, 1), (1, 128), (4, 512)]:
             x = torch.randn(batch * seq, self.hq, dtype=torch.float16, device="cuda")
             with torch.no_grad():
                 expected = linear(x)
-                actual = self.ATTN.o_proj_forward(x, linear.weight)
+                actual = o_proj_forward(x, linear.weight)
             self.assertTrue(
                 torch.allclose(expected, actual, atol=0.5, rtol=0),
                 msg=f"B={batch} S={seq}",
             )
-
-
-# --- concrete classes: 7B (target / D=128) and 0.5B (draft / D=64) ---
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-class TestQkvProjGpu(_QkvProjBase, unittest.TestCase):
-    CONFIG_PATH = CONFIG_7B
-    ATTN = target_attn
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-class TestQkvProjDraftGpu(_QkvProjBase, unittest.TestCase):
-    CONFIG_PATH = CONFIG_05B
-    ATTN = draft_attn
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-class TestRopeKvWriteGpu(_RopeKvWriteBase, unittest.TestCase):
-    CONFIG_PATH = CONFIG_7B
-    ATTN = target_attn
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-class TestRopeKvWriteDraftGpu(_RopeKvWriteBase, unittest.TestCase):
-    CONFIG_PATH = CONFIG_05B
-    ATTN = draft_attn
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-class TestFusedAttnGpu(_FusedAttnBase, unittest.TestCase):
-    CONFIG_PATH = CONFIG_7B
-    ATTN = target_attn
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-class TestFusedAttnDraftGpu(_FusedAttnBase, unittest.TestCase):
-    CONFIG_PATH = CONFIG_05B
-    ATTN = draft_attn
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-class TestDecodeAttnGpu(_DecodeAttnBase, unittest.TestCase):
-    CONFIG_PATH = CONFIG_7B
-    ATTN = target_attn
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-class TestDecodeAttnDraftGpu(_DecodeAttnBase, unittest.TestCase):
-    CONFIG_PATH = CONFIG_05B
-    ATTN = draft_attn
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-class TestOProjGpu(_OProjBase, unittest.TestCase):
-    CONFIG_PATH = CONFIG_7B
-    ATTN = target_attn
 
     @unittest.skipUnless(
         os.path.isfile(
@@ -281,18 +239,12 @@ class TestOProjGpu(_OProjBase, unittest.TestCase):
         cfg = RuntimeConfig.from_yaml(CONFIG_7B, project_root=PROJECT_ROOT)
         weights = load_weights(cfg, device="cuda")
         w_o = weights["model.layers.0.self_attn.o_proj.weight"]
-        _, _, _, _, hq, _, _, _ = _attn_dims(cfg)
+        h, _, _, _, hq, _, _, _ = _qwen7b_attn_dims(cfg)
         x = torch.randn(8, hq, dtype=torch.float16, device="cuda")
         with torch.no_grad():
             expected = F.linear(x, w_o)
-            actual = target_attn.o_proj_forward(x, w_o)
+            actual = o_proj_forward(x, w_o)
         self.assertTrue(torch.allclose(expected, actual, atol=0.5, rtol=0))
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-class TestOProjDraftGpu(_OProjBase, unittest.TestCase):
-    CONFIG_PATH = CONFIG_05B
-    ATTN = draft_attn
 
 
 if __name__ == "__main__":

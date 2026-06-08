@@ -4,6 +4,9 @@
 name: qwen2.5-7b-instruct
 model_path: models/Qwen2.5-7B-Instruct
 
+# Which production_kernels/<role>/ tree the executor uses (head_dim=128 -> target)
+kernel_set: target
+
 # Architecture (matches models/Qwen2.5-7B-Instruct/config.json)
 hidden_size: 3584
 intermediate_size: 18944
@@ -21,9 +24,6 @@ hidden_act: silu
 dtype: fp16
 accum_dtype: fp32
 cuda_arch: sm_75
-
-# Which production_kernels/<role>/ suite the executor loads (head_dim 128, templated)
-kernel_set: target
 
 # Default inference limits (override at call time)
 max_batch: 1

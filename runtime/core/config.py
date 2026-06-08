@@ -10,9 +10,6 @@ import yaml
 
 _DTYPE_BYTES = {"fp16": 2, "fp32": 4, "int64": 8}
 
-# Compiled kernel suites under runtime/production_kernels/<role>/
-KERNEL_SETS = ("target", "draft")
-
 # Bundled configs shipped with the runtime
 CONFIGS_DIR = Path(__file__).resolve().parent / "configs"
 CONFIG_7B = CONFIGS_DIR / "qwen2.5-7b.yaml"
@@ -43,7 +40,7 @@ class RuntimeConfig:
     max_seq_len: int
     kv_cache_layout: str
     layer_order: tuple[str, ...]
-    kernel_set: str = "target"
+    kernel_set: str = "target"  # which production_kernels/<role>/ tree the executor uses
 
     @classmethod
     def from_yaml(cls, path: str | Path, project_root: str | Path | None = None) -> RuntimeConfig:
@@ -89,10 +86,6 @@ class RuntimeConfig:
             raise ValueError(f"unsupported hidden_act: {self.hidden_act}")
         if self.dtype not in _DTYPE_BYTES:
             raise ValueError(f"unsupported dtype: {self.dtype}")
-        if self.kernel_set not in KERNEL_SETS:
-            raise ValueError(
-                f"unsupported kernel_set: {self.kernel_set!r} (expected one of {KERNEL_SETS})"
-            )
 
     @property
     def head_dim(self) -> int:

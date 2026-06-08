@@ -1,8 +1,4 @@
-"""Tests for Qwen2Executor (Phase 5) — stages 3–4 of parity harness.
-
-GPU parity runs for both the 7B target and the 0.5B draft model; the executor is
-config-driven, so the same test bodies cover both (one concrete class per model).
-"""
+"""Tests for Qwen2Executor (Phase 5) — stages 3–4 of parity harness."""
 
 from __future__ import annotations
 
@@ -11,14 +7,12 @@ import unittest
 import torch
 
 from runtime.buffers import allocate_buffers
-from runtime.executor import Qwen2Executor, _KERNEL_SET_HEAD_DIM
+from runtime.executor import Qwen2Executor, _ATTN_HEAD_DIM
 from runtime.tests._support import LAYER_ORDER, load_05b, load_7b
 from runtime.tests.parity_support import (
     GPU_SKIP,
-    HAS_05B_WEIGHTS,
     HAS_7B_WEIGHTS,
     REQUIRES_GPU,
-    default_05b_cfg,
     default_7b_cfg,
     greedy_decode_executor,
     greedy_decode_hf,
@@ -32,28 +26,27 @@ class TestExecutorStructure(unittest.TestCase):
         cfg = load_7b()
         self.assertEqual(cfg.layer_order, LAYER_ORDER)
 
-    def test_configs_match_kernel_set_head_dim(self) -> None:
-        """Each config's derived head_dim agrees with its kernel_set's templated D."""
-        for cfg in (load_7b(), load_05b()):
-            self.assertEqual(cfg.head_dim, _KERNEL_SET_HEAD_DIM[cfg.kernel_set])
-
-    def test_kernel_set_head_dim_mismatch_rejected(self) -> None:
-        """0.5B (head_dim 64) forced onto the target suite (D=128) must fail fast."""
+    def test_kernel_set_head_dim_gate(self) -> None:
+        # 0.5b head_dim=64 -> draft kernels; forcing kernel_set="target" (expects
+        # head_dim 128) must raise. (0.5b with its default kernel_set=draft is now
+        # supported — see TestDraftExecutorGpu.)
         cfg = load_05b()
+        self.assertEqual(cfg.head_dim, _ATTN_HEAD_DIM["draft"])
+        self.assertEqual(cfg.kernel_set, "draft")
         weights = {"model.embed_tokens.weight": torch.empty(1)}
         buffers = allocate_buffers(cfg, batch=1, max_seq_len=8, device="cpu")
         with self.assertRaises(ValueError):
             Qwen2Executor(cfg, weights, buffers, kernel_set="target")
 
 
-class _ExecutorParityBase:
-    """Stage 3: full-model prefill/decode logits vs HF. Subclass sets CFG_LOADER."""
-
-    CFG_LOADER: staticmethod
+@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
+@unittest.skipUnless(HAS_7B_WEIGHTS, "7B weights not on disk")
+class TestExecutorGpu(unittest.TestCase):
+    """Stage 3: full-model prefill/decode logits vs HF."""
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.cfg = cls.CFG_LOADER()
+        cls.cfg = default_7b_cfg()
         cls.hf, cls.executor = load_hf_and_executor(cls.cfg, max_seq_len=64)
 
     @classmethod
@@ -104,18 +97,6 @@ class _ExecutorParityBase:
         hf_tokens = greedy_decode_hf(self.hf, prompt, n_new_tokens=3)
         our_tokens = greedy_decode_executor(self.executor, prompt, n_new_tokens=3)
         self.assertEqual(our_tokens, hf_tokens)
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-@unittest.skipUnless(HAS_7B_WEIGHTS, "7B weights not on disk")
-class TestExecutorGpu(_ExecutorParityBase, unittest.TestCase):
-    CFG_LOADER = staticmethod(default_7b_cfg)
-
-
-@unittest.skipIf(REQUIRES_GPU, GPU_SKIP)
-@unittest.skipUnless(HAS_05B_WEIGHTS, "0.5B weights not on disk")
-class TestExecutor05BGpu(_ExecutorParityBase, unittest.TestCase):
-    CFG_LOADER = staticmethod(default_05b_cfg)
 
 
 if __name__ == "__main__":

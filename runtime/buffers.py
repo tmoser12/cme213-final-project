@@ -12,6 +12,10 @@ from runtime.core import shapes
 
 _TORCH_DTYPE = {"fp16": torch.float16, "fp32": torch.float32}
 
+# Largest static query length a graph captures (decode S=1, verify S=γ+1 ≤ 8).
+# Matches speculative.types.MAX_VERIFY_SEQ_LEN; kept local to avoid a cross-import.
+MAX_STATIC_SEQ_LEN = 8
+
 
 def _dtype(cfg: RuntimeConfig) -> torch.dtype:
     return _TORCH_DTYPE[cfg.dtype]
@@ -64,6 +68,18 @@ class RuntimeBuffers:
     rope_cos: torch.Tensor
     rope_sin: torch.Tensor
     cache_position: torch.Tensor
+
+    # --- Static graph scratch (Phase 3 + RoPE folding) ---------------------
+    # Fixed-address inputs for the CUDA-graphed decode/verify forwards. Updated in
+    # place before each replay; read by the captured graph. Sub-KB total, so
+    # intentionally excluded from the seq-scaling memory plan / nbytes().
+    static_input_ids: torch.Tensor   # [batch, 1] int64 — the decode token
+    static_cur_len: torch.Tensor     # 0-d int64 — cur_len = cache_position + S
+    # Constant [0, 1, …, MAX_STATIC_SEQ_LEN) row offsets. The captured forward gathers
+    # RoPE rows as rope_cos[cache_position + rope_arange[:S]] *inside the graph* (an
+    # index_select driven by the device position), so no per-step host slice/copy is
+    # needed and the slice isn't frozen at capture time.
+    rope_arange: torch.Tensor        # [MAX_STATIC_SEQ_LEN] int64
 
     @property
     def kv_head_dim(self) -> int:
@@ -132,6 +148,20 @@ class RuntimeBuffers:
         sin = sin.unsqueeze(0).expand(self.batch, -1, -1)
         return cos, sin
 
+    def static_rope(self, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Gather RoPE cos/sin for the current device position, INSIDE the captured
+        graph: rows = cache_position + rope_arange[:S]; cos/sin = table[rows].
+
+        Returns ``[1, S, head_dim]`` views. The index_select reads the device
+        position scalar (updated before each replay), so the slice is not frozen
+        at capture time and no host-side copy is needed.
+        """
+        rows = self.rope_arange[:seq_len] + self.cache_position  # [S] int64, in-graph
+        cos = self.rope_cos.index_select(0, rows).unsqueeze(0).expand(self.batch, -1, -1)
+        sin = self.rope_sin.index_select(0, rows).unsqueeze(0).expand(self.batch, -1, -1)
+        return cos, sin                                          # [batch, S, head_dim]
+
     def swap_hidden(self) -> None:
         """Exchange ping-pong hidden buffers (metadata only, zero GPU cost)."""
         self.hidden_a, self.hidden_b = self.hidden_b, self.hidden_a
@@ -194,6 +224,9 @@ def allocate_buffers(
         rope_cos=rope_cos,
         rope_sin=rope_sin,
         cache_position=torch.zeros((), dtype=torch.int64, device=dev),
+        static_input_ids=torch.zeros((batch, 1), dtype=torch.int64, device=dev),
+        static_cur_len=torch.zeros((), dtype=torch.int64, device=dev),
+        rope_arange=torch.arange(MAX_STATIC_SEQ_LEN, dtype=torch.int64, device=dev),
     )
 
 
