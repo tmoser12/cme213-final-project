@@ -9,12 +9,15 @@
 #
 # Outputs land under results/profiles/<model>/full/ (placed by
 # profile_forward.sh):
-#   forward_s<seq>_<stamp>.nsys-rep
+#   forward_<forward>_<path>_s<seq>_<stamp>.nsys-rep
+#
+# --graph / --forward / --gamma are passed straight through to profile_forward.sh.
 #
 # Usage:
 #   bash scripts/collect_forward_profiles.sh                 # both models, 512 + 2048
 #   bash scripts/collect_forward_profiles.sh --model target  # one model (repeat to add)
 #   bash scripts/collect_forward_profiles.sh --seq-len 1024  # override lengths (repeat to add)
+#   bash scripts/collect_forward_profiles.sh --model draft --graph  # graph-replay nsys
 #
 # Continues past a failed job; prints a PASS/FAIL summary and exits non-zero on
 # any failure.
@@ -27,12 +30,16 @@ cd "$PROJECT_ROOT"
 MODELS=()
 SEQ_LENS=()
 DECODE_STEPS=32
+EXTRA=""            # --graph / --forward / --gamma, passed through to profile_forward.sh
 while [ $# -gt 0 ]; do
     case "$1" in
         --model)        MODELS+=("$2");   shift 2 ;;
         --seq-len)      SEQ_LENS+=("$2");  shift 2 ;;
         --decode-steps) DECODE_STEPS="$2"; shift 2 ;;
-        -h|--help)      sed -n '2,24p' "$0"; exit 0 ;;
+        --graph)        EXTRA="$EXTRA --graph";        shift   ;;
+        --forward)      EXTRA="$EXTRA --forward $2";   shift 2 ;;
+        --gamma)        EXTRA="$EXTRA --gamma $2";     shift 2 ;;
+        -h|--help)      sed -n '2,23p' "$0"; exit 0 ;;
         *)              echo "Unknown arg: $1" >&2; exit 1 ;;
     esac
 done
@@ -60,7 +67,7 @@ for model in "${MODELS[@]}"; do
     for s in "${SEQ_LENS[@]}"; do
         run "$model/forward s=$s" \
             bash scripts/profile_forward.sh \
-                --model "$model" --seq-len "$s" --decode-steps "$DECODE_STEPS"
+                --model "$model" --seq-len "$s" --decode-steps "$DECODE_STEPS" $EXTRA
     done
 done
 

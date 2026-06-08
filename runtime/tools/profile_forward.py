@@ -10,6 +10,14 @@ so warmup and weight-load stay out of the .nsys-rep. Per-op / per-layer / per-
 phase attribution comes from the executor's NVTX ranges, which are emitted only
 when ``RUNTIME_NVTX=1`` (the shell wrapper sets it).
 
+``--graph`` profiles the CUDA-graph replay path (``decode_step_graph`` /
+``verify_gamma_graph``) instead of eager launches; prefill is always eager (never
+graphed). Under replay the executor's NVTX ranges do **not** fire (host-side, not
+recorded into the graph), so pass nsys ``--cuda-graph-trace=node`` to expand the
+replayed graph into its kernel nodes — the timeline then shows the whole forward
+stack packed back-to-back (the non-launch-bound view) with per-kernel GPU time.
+``--forward {decode,verify}`` selects the S=1 decode graph or the S=γ verify graph.
+
 Run under nsys via ``scripts/profile_forward.sh``; or directly on a GPU node:
 
     RUNTIME_NVTX=1 srun --partition=gpu-turing --gres=gpu:1 \\
@@ -63,6 +71,10 @@ def profile_forward(
     seq_len: int,
     decode_steps: int,
     batch: int,
+    *,
+    use_graph: bool = False,
+    forward: str = "decode",
+    gamma: int = 4,
     warmup_decode: int = 8,
     sync_each_decode: bool = True,
 ) -> None:
@@ -71,58 +83,68 @@ def profile_forward(
 
     device = "cuda"
     cfg = _build_cfg(model)
-    print(f"[profile_forward] model={model} ({cfg.name})  seq_len={seq_len}  "
-          f"decode_steps={decode_steps}  batch={batch}  NVTX={'on' if NVTX_ENABLED else 'OFF'}")
-    if not NVTX_ENABLED:
+    path = "graph" if use_graph else "eager"
+    print(f"[profile_forward] model={model} ({cfg.name})  forward={forward}  path={path}  "
+          f"seq_len={seq_len}  steps={decode_steps}  batch={batch}  "
+          f"NVTX={'on' if NVTX_ENABLED else 'OFF'}")
+    if use_graph:
+        print("[profile_forward] NOTE: NVTX ranges do not fire under graph replay (host-side, "
+              "not captured); run nsys with --cuda-graph-trace=node to see the graph's kernels.")
+    elif not NVTX_ENABLED:
         print("[profile_forward] WARNING: RUNTIME_NVTX!=1 — per-op ranges will be absent.")
 
-    # Buffers must hold the prompt plus every decoded token, with a little pad.
-    max_seq_len = seq_len + decode_steps + 8
+    # Buffers hold the prompt plus every step's tokens (γ per verify step) with a
+    # little pad; size for the longer of warmup vs the captured run.
+    step_tokens = 1 if forward == "decode" else gamma
+    max_seq_len = seq_len + max(decode_steps, warmup_decode) * step_tokens + 8
 
     weights, budget = load_weights_on_gpu(cfg, batch=batch, device=device)
     print(f"[profile_forward] weights loaded: {budget['weights']['total_mib']:.0f} MiB")
     buffers = allocate_buffers(cfg, batch=batch, max_seq_len=max_seq_len, device=device)
-    executor = Qwen2Executor(cfg, weights, buffers)
+    executor = Qwen2Executor(cfg, weights, buffers, use_cuda_graph=use_graph)
 
-    vocab = cfg.vocab_size
-    prompt = torch.randint(0, vocab, (batch, seq_len), dtype=torch.int64, device=device)
+    prompt = torch.randint(0, cfg.vocab_size, (batch, seq_len), dtype=torch.int64, device=device)
+
+    # Per-iteration forward: decode reads the next token from the prior logits;
+    # verify replays a fixed γ draft block (content is irrelevant to timing). In
+    # graph mode the *_graph twin self-captures on first call, so the warmup below
+    # builds the graph and the bracket replays it.
+    if forward == "decode":
+        _fwd = executor.decode_step_graph if use_graph else executor.decode_step
+        step = lambda lg: _fwd(lg[:, -1].argmax(dim=-1))
+    else:  # verify
+        _fwd = executor.verify_gamma_graph if use_graph else executor.verify_gamma
+        _draft = torch.randint(0, cfg.vocab_size, (batch, gamma), dtype=torch.int64, device=device)
+        step = lambda lg: _fwd(_draft)
 
     # ---- Warmup (OUTSIDE the capture bracket) --------------------------------
-    # Must mirror the captured workload's SHAPES: prefill at seq_len then decode
-    # at the real context depth. Warming at a smaller length leaves the caching
-    # allocator, cuBLAS workspace/algo selection, and CUDA module loads for the
-    # 512-shaped path unpaid, so those one-time costs leak into the capture and
-    # spike the first few decode steps. prefill() resets the KV cache, so the
-    # captured prefill below reuses every block this warmup grew.
+    # Mirror the captured workload's SHAPES: prefill at seq_len then step at the real
+    # context depth, so allocator growth / cuBLAS algo selection / module loads are
+    # paid here, not in the capture. In graph mode this first run also *captures* the
+    # decode/verify graph, so the bracket below replays an already-built graph.
     print("[profile_forward] warming up (same shapes as capture)...")
     with torch.no_grad():
         logits = executor.prefill(prompt)
-        tok = logits[:, -1].argmax(dim=-1)
         for _ in range(warmup_decode):
-            logits = executor.decode_step(tok)
-            tok = logits[:, -1].argmax(dim=-1)
+            logits = step(logits)
     torch.cuda.synchronize()
 
-    # Warmup advanced the cache cursor to seq_len + warmup_decode; clear it so the
-    # captured prefill's pre-reset validation sees a fresh cache (prefill validates
-    # input length against the *current* position before it resets the KV cache).
+    # Warmup advanced the cursor; clear it so the captured prefill's pre-reset length
+    # validation sees a fresh cache (prefill validates before it resets the KV cache).
     executor.reset_kv_cache()
 
-    # ---- Captured region: real prefill + decode steps -------------------------
-    # Sync after each decode step so every NVTX "decode" range bounds exactly one
-    # token's GPU work (true per-token latency) rather than host enqueue time
-    # gated by launch-queue backpressure.
-    print("[profile_forward] capturing prefill + decode...")
+    # ---- Captured region: real prefill (eager) + graph/eager steps ------------
+    # Sync after each step so every range bounds exactly one step's GPU work (true
+    # per-step latency) rather than host enqueue time gated by launch backpressure.
+    print(f"[profile_forward] capturing prefill + {forward} ({path})...")
     torch.cuda.cudart().cudaProfilerStart()
     with torch.no_grad():
-        logits = executor.prefill(prompt)              # NVTX "prefill"
+        logits = executor.prefill(prompt)              # eager — prefill is never graphed
         torch.cuda.synchronize()
-        tok = logits[:, -1].argmax(dim=-1)
         for _ in range(decode_steps):
-            logits = executor.decode_step(tok)         # NVTX "decode"
+            logits = step(logits)
             if sync_each_decode:
                 torch.cuda.synchronize()
-            tok = logits[:, -1].argmax(dim=-1)
     torch.cuda.synchronize()
     torch.cuda.cudart().cudaProfilerStop()
     print("[profile_forward] done.")
@@ -170,15 +192,17 @@ def _time_prefill(
 
 
 def _time_decode(
-    executor: Qwen2Executor, seed_logits: torch.Tensor, decode_steps: int
+    executor: Qwen2Executor, seed_logits: torch.Tensor, decode_steps: int,
+    use_graph: bool = False,
 ) -> list[float]:
     """Per-token decode wall-times (ms), continuing from the prefilled context."""
+    decode = executor.decode_step_graph if use_graph else executor.decode_step
     tok = seed_logits[:, -1].argmax(dim=-1)
     per_step: list[float] = []
     for _ in range(decode_steps):
         torch.cuda.synchronize()
         t0 = time.perf_counter()
-        logits = executor.decode_step(tok)
+        logits = decode(tok)
         torch.cuda.synchronize()
         per_step.append((time.perf_counter() - t0) * 1e3)
         tok = logits[:, -1].argmax(dim=-1)
@@ -195,7 +219,7 @@ def _render_table(headers: list[str], rows: list[list[str]]) -> list[str]:
 
 def _build_report_text(
     model: str, cfg: RuntimeConfig, batch: int, decode_steps: int, reps: int,
-    rows: list[dict],
+    rows: list[dict], path: str = "eager",
 ) -> str:
     headers = ["Seq", "Prefill (ms)", "Prefill (tok/s)", "Decode (ms/tok)",
                "Decode p90 (ms)", "Decode max (ms)", "Decode (tok/s)"]
@@ -218,7 +242,8 @@ def _build_report_text(
     head = [
         title,
         "=" * max(width, len(title)),
-        f"device={dev}  dtype=fp16  batch={batch}  decode_steps={decode_steps}  prefill_reps={reps}",
+        f"device={dev}  dtype=fp16  batch={batch}  decode_steps={decode_steps}  "
+        f"prefill_reps={reps}  decode_path={path} (prefill always eager)",
         f"layers={cfg.num_hidden_layers}  hidden={cfg.hidden_size}  "
         f"heads={cfg.num_attention_heads}q/{cfg.num_key_value_heads}kv  vocab={cfg.vocab_size}",
         "prefill (tok/s)=seq/prefill_time (prompt ingest); decode latency synced "
@@ -235,6 +260,7 @@ def benchmark_forward_sweep(
     batch: int,
     reps: int,
     out_dir: Path,
+    use_graph: bool = False,
     warmup_decode: int = 8,
 ) -> Path:
     """Time prefill + decode across ``seq_lens`` and write a ruled .txt table.
@@ -249,9 +275,10 @@ def benchmark_forward_sweep(
 
     device = "cuda"
     cfg = _build_cfg(model)
+    path = "graph" if use_graph else "eager"
     max_seq_len = max(seq_lens) + decode_steps + 8
     print(f"[benchmark] model={model} ({cfg.name})  seq_lens={seq_lens}  "
-          f"decode_steps={decode_steps}  batch={batch}  reps={reps}")
+          f"decode_steps={decode_steps}  batch={batch}  reps={reps}  decode_path={path}")
 
     weights, budget = load_weights_on_gpu(cfg, batch=batch, device=device)
     print(f"[benchmark] weights loaded: {budget['weights']['total_mib']:.0f} MiB")
@@ -264,17 +291,19 @@ def benchmark_forward_sweep(
         for sl in seq_lens:
             prompt = torch.randint(0, vocab, (batch, sl), dtype=torch.int64, device=device)
 
-            # Warmup at THIS shape (prefill + a few decode), outside timing.
+            # Warmup at THIS shape (prefill + a few decode), outside timing. In graph
+            # mode the first decode captures the graph (one capture serves all lengths).
+            decode = executor.decode_step_graph if use_graph else executor.decode_step
             executor.reset_kv_cache()
             logits = executor.prefill(prompt)
             tok = logits[:, -1].argmax(dim=-1)
             for _ in range(warmup_decode):
-                logits = executor.decode_step(tok)
+                logits = decode(tok)
                 tok = logits[:, -1].argmax(dim=-1)
             torch.cuda.synchronize()
 
             pre_ms_list, seed = _time_prefill(executor, prompt, reps)
-            dec_ms_list = _time_decode(executor, seed, decode_steps)
+            dec_ms_list = _time_decode(executor, seed, decode_steps, use_graph=use_graph)
 
             pre_ms = statistics.median(pre_ms_list)
             dec_ms = statistics.median(dec_ms_list)
@@ -291,9 +320,9 @@ def benchmark_forward_sweep(
                   f"   decode {dec_ms:6.3f} ms/tok ({1e3 / dec_ms:7.1f} tok/s)"
                   f"  p90 {_p90(dec_ms_list):.3f}  max {max(dec_ms_list):.3f}")
 
-    report = _build_report_text(model, cfg, batch, decode_steps, reps, rows)
+    report = _build_report_text(model, cfg, batch, decode_steps, reps, rows, path)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"forward_sweep_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    out_path = out_dir / f"forward_sweep_{path}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
     out_path.write_text(report)
     print("\n" + report)
     print(f"[benchmark] wrote {out_path}")
@@ -308,6 +337,15 @@ def main() -> None:
     p.add_argument("--decode-steps", type=int, default=None,
                    help="decode steps (default 8 for capture, 32 for --sweep)")
     p.add_argument("--batch", type=int, default=1)
+    p.add_argument("--graph", action="store_true",
+                   help="profile the CUDA-graph replay path (decode_step_graph / "
+                        "verify_gamma_graph) instead of eager. Works with capture and "
+                        "--sweep. NVTX ranges don't fire under replay; pair with nsys "
+                        "--cuda-graph-trace=node.")
+    p.add_argument("--forward", choices=("decode", "verify"), default="decode",
+                   help="capture mode: which forward to profile — S=1 decode or S=γ verify")
+    p.add_argument("--gamma", type=int, default=4,
+                   help="--forward verify: query length S (= γ draft tokens)")
     p.add_argument("--no-sync-each-decode", action="store_true",
                    help="capture mode: don't sync per decode step; NVTX ranges then show "
                         "the async pipeline (host enqueue) instead of per-token latency")
@@ -332,6 +370,7 @@ def main() -> None:
             batch=args.batch,
             reps=args.reps,
             out_dir=_PROJECT_ROOT / "results" / "profiles" / args.model / "full",
+            use_graph=args.graph,
         )
         return
 
@@ -340,6 +379,9 @@ def main() -> None:
         seq_len=args.seq_len,
         decode_steps=args.decode_steps or 8,
         batch=args.batch,
+        use_graph=args.graph,
+        forward=args.forward,
+        gamma=args.gamma,
         sync_each_decode=not args.no_sync_each_decode,
     )
 

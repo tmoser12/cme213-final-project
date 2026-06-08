@@ -1117,46 +1117,16 @@ static torch::Tensor launch_decode_attn(const torch::Tensor& q,
         return o;
     }
 
-    // Split-KV path: partition the KV axis across grid.x, then combine.
-    //
-    // The fp32 partials must NOT be a per-call torch::empty on the CUDA-graph
-    // (device-scalar) path. Scratch allocated AND freed inside a capture gets its
-    // pool block reused by the many other allocations interleaved across the
-    // full-model forward, which corrupts on replay (all-NaN output). (A graph
-    // around a single split op captures fine — the bug needs the interleaving.)
-    // So on the device-scalar path we keep ONE persistent scratch buffer per
-    // S=Q_TOKENS — num_splits is fixed there (from max_seq) — allocated once
-    // OUTSIDE capture (during warmup) and reused at a stable address across all
-    // layers and replays (single-stream capture serializes the reuse). The eager
-    // path is never captured, so a transient torch::empty is correct there (and
-    // its num_splits varies with cur_len).
+    // Split-KV path: partition the KV axis across grid.x, write fp32 partials to
+    // scratch, then combine. Per-call scratch is graph-capture-safe — the caching
+    // allocator's private pool replays its alloc/free correctly.
     auto fopts = q.options().dtype(torch::kFloat32);
-    torch::Tensor po_t, pm_t, pl_t;   // hold eager scratch alive until launch enqueues
-    float *po_ptr, *pm_ptr, *pl_ptr;
-    if (cur_len_ptr != nullptr) {
-        // Leaked (never destructed) to avoid a static torch::Tensor dtor running
-        // after the CUDA context is torn down at process exit. One set per
-        // Q_TOKENS template instantiation; (re)allocated only if geometry changes.
-        static torch::Tensor* s_po = new torch::Tensor();
-        static torch::Tensor* s_pm = new torch::Tensor();
-        static torch::Tensor* s_pl = new torch::Tensor();
-        if (!s_po->defined() || s_po->size(0) != B || s_po->size(1) != h_q ||
-            s_po->size(2) != num_splits) {
-            *s_po = torch::empty({B, h_q, num_splits, Q_TOKENS, D}, fopts);
-            *s_pm = torch::empty({B, h_q, num_splits, Q_TOKENS}, fopts);
-            *s_pl = torch::empty({B, h_q, num_splits, Q_TOKENS}, fopts);
-        }
-        po_ptr = s_po->data_ptr<float>();
-        pm_ptr = s_pm->data_ptr<float>();
-        pl_ptr = s_pl->data_ptr<float>();
-    } else {
-        po_t = torch::empty({B, h_q, num_splits, Q_TOKENS, D}, fopts);
-        pm_t = torch::empty({B, h_q, num_splits, Q_TOKENS}, fopts);
-        pl_t = torch::empty({B, h_q, num_splits, Q_TOKENS}, fopts);
-        po_ptr = po_t.data_ptr<float>();
-        pm_ptr = pm_t.data_ptr<float>();
-        pl_ptr = pl_t.data_ptr<float>();
-    }
+    auto partial_o = torch::empty({B, h_q, num_splits, Q_TOKENS, D}, fopts);
+    auto partial_m = torch::empty({B, h_q, num_splits, Q_TOKENS}, fopts);
+    auto partial_l = torch::empty({B, h_q, num_splits, Q_TOKENS}, fopts);
+    float* po_ptr = partial_o.data_ptr<float>();
+    float* pm_ptr = partial_m.data_ptr<float>();
+    float* pl_ptr = partial_l.data_ptr<float>();
 
     dim3 grid(num_splits, h_q, B);
     dim3 block(NUM_THREADS);
