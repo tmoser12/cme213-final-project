@@ -1,0 +1,57 @@
+========================================================================
+Speculative decoding benchmark — tokens/sec
+========================================================================
+  decode      : stochastic (seed 42), 128 new tokens/prompt
+  gamma sweep : [2, 4, 6, 8]    draft CUDA graph: ON
+  measurement : median of 2 trials (1 warmup)
+
+mtbench_1 [writing]  (prompt 61 tok)
+  dual-GPU  spec   γ=2          36.1 tok/s    nanx  (accept 1.03/2, 63 iters)
+  dual-GPU  spec   γ=4          34.9 tok/s    nanx  (accept 1.19/4, 59 iters)
+  dual-GPU  spec   γ=6          35.1 tok/s    nanx  (accept 1.35/6, 55 iters)
+  dual-GPU  spec   γ=8          31.5 tok/s    nanx  (accept 1.56/8, 50 iters)
+
+mtbench_2 [reasoning]  (prompt 92 tok)
+  dual-GPU  spec   γ=2          42.3 tok/s    nanx  (accept 1.29/2, 56 iters)
+  dual-GPU  spec   γ=4          53.6 tok/s    nanx  (accept 2.46/4, 37 iters)
+  dual-GPU  spec   γ=6          51.4 tok/s    nanx  (accept 2.66/6, 35 iters)
+  dual-GPU  spec   γ=8          48.9 tok/s    nanx  (accept 3.64/8, 28 iters)
+
+mtbench_3 [coding]  (prompt 69 tok)
+  dual-GPU  spec   γ=2          49.9 tok/s    nanx  (accept 1.74/2, 47 iters)
+  dual-GPU  spec   γ=4          62.2 tok/s    nanx  (accept 2.97/4, 33 iters)
+  dual-GPU  spec   γ=6          70.8 tok/s    nanx  (accept 4.20/6, 25 iters)
+  dual-GPU  spec   γ=8          74.1 tok/s    nanx  (accept 5.45/8, 20 iters)
+
+mtbench_4 [math]  (prompt 74 tok)
+  dual-GPU  spec   γ=2          47.2 tok/s    nanx  (accept 1.41/2, 54 iters)
+  dual-GPU  spec   γ=4          62.0 tok/s    nanx  (accept 3.03/4, 32 iters)
+  dual-GPU  spec   γ=6          61.1 tok/s    nanx  (accept 3.96/6, 27 iters)
+  dual-GPU  spec   γ=8          66.3 tok/s    nanx  (accept 4.24/8, 25 iters)
+
+mtbench_5 [knowledge]  (prompt 58 tok)
+  dual-GPU  spec   γ=2          38.6 tok/s    nanx  (accept 1.11/2, 61 iters)
+  dual-GPU  spec   γ=4          46.0 tok/s    nanx  (accept 2.12/4, 41 iters)
+  dual-GPU  spec   γ=6          43.3 tok/s    nanx  (accept 2.12/6, 41 iters)
+  dual-GPU  spec   γ=8          39.6 tok/s    nanx  (accept 3.00/8, 32 iters)
+
+mtbench_6 [coding]  (prompt 378 tok)
+  dual-GPU  spec   γ=2          41.9 tok/s    nanx  (accept 1.39/2, 54 iters)
+  dual-GPU  spec   γ=4          49.6 tok/s    nanx  (accept 2.79/4, 34 iters)
+  dual-GPU  spec   γ=6          52.5 tok/s    nanx  (accept 3.61/6, 28 iters)
+  dual-GPU  spec   γ=8          49.9 tok/s    nanx  (accept 3.66/8, 29 iters)
+
+mtbench_7 [reasoning]  (prompt 355 tok)
+  dual-GPU  spec   γ=2          44.0 tok/s    nanx  (accept 1.39/2, 54 iters)
+  dual-GPU  spec   γ=4          66.0 tok/s    nanx  (accept 3.61/4, 28 iters)
+  dual-GPU  spec   γ=6          49.8 tok/s    nanx  (accept 3.45/6, 29 iters)
+  dual-GPU  spec   γ=8          61.2 tok/s    nanx  (accept 5.55/8, 20 iters)
+
+------------------------------------------------------------------------
+Mean across prompts (tok/s):
+
+  dual-GPU  spec  γ=2           42.9 tok/s
+  dual-GPU  spec  γ=4           53.5 tok/s
+  dual-GPU  spec  γ=6           52.0 tok/s
+  dual-GPU  spec  γ=8           53.1 tok/s
+========================================================================

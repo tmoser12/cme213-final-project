@@ -28,4 +28,4 @@ rebuild; consider a source-vs-`.so` mtime check at extension load time.
 
 Eli's Claude Sessions:
 Resume performance modeling discussion: claude -r 86a2ff9f-a4b6-4f38-98da-7f7e559b8d6b
-
+resume graph capture walkthrough: claude -r 64b76f84-52ac-4123-9098-5053834f63d6

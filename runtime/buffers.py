@@ -12,9 +12,9 @@ from runtime.core import shapes
 
 _TORCH_DTYPE = {"fp16": torch.float16, "fp32": torch.float32}
 
-# Largest static query length a graph captures (decode S=1, verify S=γ+1 ≤ 8).
+# Largest static query length a graph captures (decode S=1, verify S=γ+1 ≤ 9).
 # Matches speculative.types.MAX_VERIFY_SEQ_LEN; kept local to avoid a cross-import.
-MAX_STATIC_SEQ_LEN = 8
+MAX_STATIC_SEQ_LEN = 9
 
 
 def _dtype(cfg: RuntimeConfig) -> torch.dtype:

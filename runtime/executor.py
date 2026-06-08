@@ -415,8 +415,8 @@ class Qwen2Executor(GraphExecutorMixin):
             raise ValueError(f"input_ids on {input_ids.device}, expected {self.device}")
 
         seq_len = input_ids.shape[1]
-        self._validate_input_ids(input_ids, seq_len)
-        self.reset_kv_cache()
+        self.reset_kv_cache()  # fresh prompt: clear the cursor BEFORE the overflow check,
+        self._validate_input_ids(input_ids, seq_len)  # else a re-prefill validates vs stale pos
 
         hidden = self._ops["embedding_forward"](
             input_ids,

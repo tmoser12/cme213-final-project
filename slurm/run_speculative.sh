@@ -4,6 +4,7 @@
 # mpirun spawns the 2 ranks inside it.
 #
 #   bash slurm/run_speculative.sh                 # SLURM, 2 GPUs (default)
+#   bash slurm/run_speculative.sh --slurm-gpu --steps 32 --gamma 4   # explicit SLURM (same as default)
 #   bash slurm/run_speculative.sh --steps 32 --gamma 4
 #   bash slurm/run_speculative.sh --local         # login node (needs NVHPC module + 2 visible GPUs)
 #
@@ -22,6 +23,7 @@ ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --local) MODE="local"; shift ;;
+        --slurm-gpu|--slurm) MODE="slurm"; shift ;;
         --) shift; ARGS+=("$@"); break ;;
         *) ARGS+=("$1"); shift ;;
     esac

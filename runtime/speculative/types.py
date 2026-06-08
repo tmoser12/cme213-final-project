@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-# small_q_attn_forward supports S in [1, 8]. Draft MPI payload is always γ tokens.
+# small_q_attn_forward supports S in [1, 9]. Draft MPI payload is always γ tokens.
 # Target VERIFY uses S=γ on the first post-prefill iter, S=γ+1 thereafter (bonus
 # prepended). Phase 8b CUDA graphs capture fixed S=γ+1 with leading_bonus_valid
 # masking so first and subsequent iters share one graph.
-MAX_VERIFY_GAMMA = 7
-MAX_VERIFY_SEQ_LEN = 8  # γ + 1 when leading bonus bundled
+MAX_VERIFY_GAMMA = 8
+MAX_VERIFY_SEQ_LEN = 9  # γ + 1 when leading bonus bundled
 
 
 class ForwardMode(Enum):

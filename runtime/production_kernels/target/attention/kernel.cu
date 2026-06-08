@@ -666,7 +666,7 @@ torch::Tensor fused_attn_forward(torch::Tensor q,
 //   (2) sharing each loaded KV tile across the 7 query heads in a GQA group.
 // ===========================================================================
 
-constexpr int MAX_VERIFY = 8;   // largest supported query length S (gamma <= 7)
+constexpr int MAX_VERIFY = 9;   // largest supported query length S (gamma <= 8, bundled S=gamma+1)
 
 template<int Q_TOKENS, int D, int KV_TILE, int NUM_THREADS>
 __global__ void decode_attn_kernel(
@@ -1194,6 +1194,7 @@ static torch::Tensor dispatch_decode_attn(const torch::Tensor& q,
         case 6: return launch_decode_attn<6>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
         case 7: return launch_decode_attn<7>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
         case 8: return launch_decode_attn<8>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
+        case 9: return launch_decode_attn<9>(q, cache_k, cache_v, cur_len, softmax_scale, cos_ptr, sin_ptr, cur_len_ptr);
     }
     TORCH_CHECK(false, "decode_attn: unsupported S=", q.size(2),
                 " (must be in [1, ", MAX_VERIFY, "])");
