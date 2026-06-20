@@ -38,6 +38,23 @@ from runtime.speculative.types import MAX_VERIFY_GAMMA
 DEFAULT_PROMPTS = PROJECT_ROOT / "runtime/benchmarks/prompts/mt_bench_subset.jsonl"
 WORKER_MODULE = "runtime.benchmarks._specdec_worker"
 
+# Frozen external reference: vLLM 0.6.x target-only baseline on this exact workload
+# (Qwen2.5-7B-Instruct FP16, single GPU, batch=1, 128 new tokens/prompt, stochastic
+# temp=1 / top_p=1 / top_k=-1, seed 42, CUDA graphs ON). Measured once on the gpu-turing
+# Quadro RTX 6000 node. These numbers are deterministic for this workload and don't move,
+# so they're frozen here as a comparison column instead of re-measured every run. When the
+# internal target-only baseline isn't run, spec-decode speedups are computed against this.
+VLLM_BASELINE_TOK_S = {
+    "mtbench_1": 33.0,
+    "mtbench_2": 32.9,
+    "mtbench_3": 32.9,
+    "mtbench_4": 32.8,
+    "mtbench_5": 32.8,
+    "mtbench_6": 32.3,
+    "mtbench_7": 32.2,
+}
+VLLM_BASELINE_MEAN = 32.7
+
 
 def load_prompts(path: Path) -> list[dict]:
     prompts = []
@@ -104,21 +121,29 @@ def report(prompts: list[dict], records: list[dict], spec: dict) -> str:
         f"  decode      : stochastic (seed {spec['seed']}), {spec['n_new']} new tokens/prompt",
         f"  gamma sweep : {spec['gammas']}    draft CUDA graph: ON",
         f"  measurement : median of {spec['trials']} trials ({spec['warmup']} warmup)",
+        "  vLLM ref    : frozen external baseline (target-only, graphs ON); speedups are",
+        "                vs the internal baseline if run, else vs the vLLM reference",
         "",
     ]
     order = {"baseline": 0, "single": 1, "mpi": 2}
     for p in prompts:
         recs = sorted(by_id.get(p["id"], []), key=lambda r: (order[r["config"]], r["gamma"] or 0))
-        base = next((r["tok_s"] for r in recs if r["config"] == "baseline"), None)
+        internal_base = next((r["tok_s"] for r in recs if r["config"] == "baseline"), None)
+        vllm_base = VLLM_BASELINE_TOK_S.get(p["id"])
+        base = internal_base if internal_base else vllm_base
         for r in recs:
             r["_speedup"] = r["tok_s"] / base if base else float("nan")
         ntok = len(next(pp for pp in spec["prompts"] if pp["id"] == p["id"])["ids"])
         lines.append(f"{p['id']} [{p.get('category', '?')}]  (prompt {ntok} tok)")
+        if vllm_base is not None:
+            lines.append(f"  {'vLLM (target-only, ref)':<26} {vllm_base:7.1f} tok/s    ref")
         lines += [_row(r) for r in recs]
         lines.append("")
 
     # cross-prompt mean per config
     lines += ["-" * 72, "Mean across prompts (tok/s):", ""]
+    if VLLM_BASELINE_MEAN is not None:
+        lines.append(f"  {'vLLM (target-only, ref)':<26} {VLLM_BASELINE_MEAN:7.1f} tok/s")
     keys = [("baseline", None)] + [("single", g) for g in spec["gammas"]] + \
            [("mpi", g) for g in spec["gammas"]]
     for cfg, g in keys:
