@@ -1,26 +1,27 @@
-# Qwen2 Inference Runtime
+# `runtime/` — Qwen2 inference engine
 
 Config-driven inference engine for Qwen2.5 (**7B target** + **0.5B draft**) on Turing GPUs.
-Python owns orchestration; ahead-of-time-compiled CUDA kernels own the math. Built for a research
-project (CUDA graphs + speculative decoding), not production.
+Python owns orchestration; ahead-of-time-compiled CUDA kernels own the math. See the top-level
+[README](../README.md) for results and the big picture; this page is the map of the package.
 
 ## Layout
 
 ```
 runtime/
 ├── core/                       # config, shapes, memory, weights
-│   ├── configs/                # qwen2.5-7b.yaml (kernel_set=target), qwen2.5-0.5b.yaml (draft)
-│   ├── config.py shapes.py memory.py weights.py
+│   ├── configs/                #   qwen2.5-7b.yaml (kernel_set=target), qwen2.5-0.5b.yaml (draft)
+│   └── config.py shapes.py memory.py weights.py
 ├── buffers.py                  # pre-allocated device buffers (KV cache, rope tables, static graph scratch)
-├── executor.py                 # Qwen2Executor — eager prefill / decode / verify_gamma / greedy_extend
+├── executor.py                 # Qwen2Executor — eager prefill / decode_step / verify_gamma / greedy_extend
 ├── executor_graph.py           # GraphExecutorMixin — CUDA-graph capture/replay (decode + verify)
+├── nvtx.py                     # opt-in NVTX ranges (RUNTIME_NVTX=1) for nsys attribution
 ├── production_kernels/
 │   ├── target/<op>/            # 7B kernels (head_dim=128): rmsnorm, embedding, attention, swiglu, residual_ops
 │   └── draft/<op>/             # 0.5B kernels (head_dim=64), same layout
-├── speculative/                # draft_runner, target_step, sampler, spec_decode, mpi_coordinator, mpi_protocol
-├── benchmarks/                 # baseline + graph + spec-decode benchmarks
-├── tests/                      # unit + GPU parity tests
-└── plan.md                     # phase roadmap / status
+├── speculative/                # sampler, draft_runner, target_step, spec_decode, mpi_protocol, mpi_coordinator
+├── benchmarks/                 # specdec_bench (2-GPU suite), graph benchmarks, HF baseline, prompts
+├── tools/profile_forward.py    # nsys-instrumented full forward + latency sweep
+└── tests/                      # unit + GPU parity tests
 ```
 
 Each YAML is the **single source of truth** for a model (dims, dtype, paths, layer order,
@@ -49,7 +50,9 @@ seq = ex.greedy_extend(input_ids, n_new_tokens=64, use_cuda_graph=True)
 bash scripts/build_kernels.sh                 # all roles, all ops
 bash scripts/build_kernels.sh draft attention # one role/op  (attention OOMs on the login node — use srun)
 ```
-`.so` files land beside each `ops.py`; inference imports them (no runtime JIT).
+`.so` files land beside each `ops.py`; inference imports them (no runtime JIT). A stale `.so`
+fails silently — rebuild after editing any `kernel.cu`
+(see [`docs/cuda_graph_stale_extension_bug.md`](../docs/cuda_graph_stale_extension_bug.md)).
 
 ## CUDA graphs
 
@@ -57,26 +60,28 @@ The per-token forward (~150 kernel launches) is capturable behind `use_cuda_grap
 `decode_step_graph` (S=1) and `verify_gamma_graph` (S=γ+1). Positions live in device scalars and
 RoPE is gathered in-graph, so one graph replays across all steps/prompts. Bit-exact vs eager.
 
-- **7B target: ~1.00×** — memory-bandwidth-bound (reading ~15 GB of weights/token dominates).
-- **0.5B draft: ~1.64×** — genuinely launch-bound; this is where graphs pay off.
+- **7B target: ~1.00×** — memory-bandwidth-bound (reading ~14 GB of weights/token dominates).
+- **0.5B draft: ~1.6–1.8×** — genuinely launch-bound; this is where graphs pay off.
 
-See `documentation/cuda_graphs_explained.md` (concepts), `cuda_graph_issues_and_concepts.md`
-(issues journal), and the `*_graph_benchmarks.md` docs.
+See `docs/cuda_graphs_explained.md` (concepts), `docs/cuda_graph_issues_and_concepts.md`
+(issues journal), and the `docs/*_graph_benchmarks.md` results.
 
 ## Speculative decoding
 
 7B target verifies γ drafts proposed by the 0.5B draft (host-side stochastic accept/reject;
-`documentation/speculative_decoding.md`).
+`docs/speculative_decoding.md`).
 
 ```python
 from runtime.speculative.draft_runner import DraftRunner
 from runtime.speculative.spec_decode import speculative_generate
-res = speculative_generate(target_ex, DraftRunner(draft_ex, seed=0), prompt, n_new=64, gamma=4)
+res = speculative_generate(target_ex, DraftRunner(draft_ex, seed=0), prompt_ids, n_new_tokens=64, gamma=4)
 ```
 
 - **Single-process** (both models, one GPU — they fit: ~15 GB): `speculative_generate`. With greedy
   standardization it reproduces the target's greedy sequence exactly.
 - **2-GPU MPI** (target on cuda:0, draft on cuda:1): `bash slurm/run_speculative.sh --steps 32 --gamma 4`.
+- **Benchmark suite** (γ sweep, single- and dual-GPU, vs. baseline): `bash slurm/run_specdec_bench.sh`
+  → `runtime/benchmarks/specdec_report.txt`.
 
 ## Tests
 
@@ -86,11 +91,13 @@ python -m unittest runtime.tests.test_config runtime.tests.test_mpi_protocol
 # GPU (one targeted module per job — avoids the 30-min cap; one model copy per job)
 bash slurm/run_tests_gpu.sh runtime.tests.test_decode_graph
 bash slurm/run_tests_gpu.sh runtime.tests.test_draft_executor
+bash slurm/run_tests_gpu.sh runtime.tests.test_spec_decode
 ```
 
 ## Docs
 
-`documentation/runtime_architecture_and_execution.md` (forward pass), `runtime_kernel_system.md`
-(kernels/build), `cuda_graphs_explained.md` + `cuda_graph_issues_and_concepts.md` (graphs),
-`target_graph_benchmarks.md` + `draft_graph_benchmarks.md` (numbers). Plans: `graph_plan.md`,
-`draft_integration_plan.md`, `runtime/plan.md`.
+`docs/runtime_architecture_and_execution.md` (forward pass), `docs/runtime_kernel_system.md`
+(kernels/build), `docs/decode_attention_design.md` (flash-decoding kernel),
+`docs/cuda_graphs_explained.md` + `docs/cuda_graph_issues_and_concepts.md` (graphs),
+`docs/target_graph_benchmarks.md` + `docs/draft_graph_benchmarks.md` (numbers),
+`docs/mpi_benchmarks.md` (MPI).

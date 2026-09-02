@@ -1,25 +1,21 @@
-results/*
-logs/*
-models/*
-tmp.md
-build/*
-# user specific
-setup.sh
-
-# Ai stuff
-CLAUDE.md
-.claude/*
-*.tex
-*.png
-
-# mac stuff
-src/.DS_Store
-.DS_Store
-
-# pycaches 
-*__pycache__/
-*__pycache__/*
-
-src/target/kernels/runtime/*
-src/target/kernels/forward.cc
+# downloaded weights, run outputs
+models/
+results/
+logs/
+build/
 *.so
+*.nsys-rep
+*.ncu-rep
+*.sqlite
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# editor / agent scratch
+.cursor/
+.claude/
+CLAUDE.md
+tmp.md
+.DS_Store
