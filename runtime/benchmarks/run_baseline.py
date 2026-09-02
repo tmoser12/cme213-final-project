@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 runtime/benchmarks/run_baseline.py
-Measure autoregressive greedy decode tokens/sec for
-Qwen2.5-7B-Instruct and Qwen2.5-0.5B-Instruct on a single GPU.
+Measure stock-HuggingFace (eager PyTorch) greedy decode tokens/sec for
+Qwen2.5-7B-Instruct and Qwen2.5-0.5B-Instruct on a single GPU — the control the
+native runtime/ engine and speculative decoding are compared against.
 
 Run via SLURM:
   sbatch slurm/baseline.slurm
@@ -23,12 +24,10 @@ from pathlib import Path
 
 import torch
 
-# Add project root to path so src/ imports work
+# Add project root to path so runtime/ imports work
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.models.loader import load_model
-from src.inference.autoregressive import greedy_decode
-from src.utils.benchmarking import run_trials, summarise, print_stats
+from runtime.benchmarks.hf_baseline import greedy_decode, load_model, print_stats, run_trials, summarise
 
 MODELS = {
     "7b":  "./models/Qwen2.5-7B-Instruct",
