@@ -1,2 +1,21 @@
-results/*
-logs/*
+# downloaded weights, run outputs
+models/
+results/
+logs/
+build/
+*.so
+*.nsys-rep
+*.ncu-rep
+*.sqlite
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# editor / agent scratch
+.cursor/
+.claude/
+CLAUDE.md
+tmp.md
+.DS_Store

@@ -7,9 +7,9 @@
 #
 # Quota note: 7B FP16 ~= 14 GB, 0.5B FP16 ~= 1 GB. Total ~15 GB of your 200 GB quota.
 
-set -e
+# set -e
 
-source activate cme213
+# source activate cme213
 
 echo "Downloading Qwen2.5-7B-Instruct (~14 GB)..."
 hf download Qwen/Qwen2.5-7B-Instruct \

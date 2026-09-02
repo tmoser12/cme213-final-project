@@ -1,0 +1,42 @@
+# Qwen2.5-7B-Instruct runtime config
+# Single source of truth for dims, dtype policy, and paths.
+
+name: qwen2.5-7b-instruct
+model_path: models/Qwen2.5-7B-Instruct
+
+# Which production_kernels/<role>/ tree the executor uses (head_dim=128 -> target)
+kernel_set: target
+
+# Architecture (matches models/Qwen2.5-7B-Instruct/config.json)
+hidden_size: 3584
+intermediate_size: 18944
+num_hidden_layers: 28
+num_attention_heads: 28
+num_key_value_heads: 4
+vocab_size: 152064
+rms_norm_eps: 1.0e-6
+rope_theta: 1000000.0
+max_position_embeddings: 32768
+tie_word_embeddings: false
+hidden_act: silu
+
+# Runtime policy (Quadro RTX 6000 / Turing)
+dtype: fp16
+accum_dtype: fp32
+cuda_arch: sm_75
+
+# Default inference limits (override at call time)
+max_batch: 1
+max_seq_len: 2048
+
+# KV cache: layer-major [num_layers, batch, num_kv_heads, max_seq, head_dim]
+kv_cache_layout: layer_major
+
+# Decoder layer order (matches modeling_qwen2.Qwen2DecoderLayer)
+layer_order:
+  - input_rmsnorm
+  - attention
+  - residual_add
+  - post_attn_rmsnorm
+  - swiglu_mlp
+  - residual_add

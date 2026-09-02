@@ -25,12 +25,12 @@ echo "GPU       : $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 echo "Started   : $(date)"
 echo ""
 
-python benchmarks/run_baseline.py \
+python runtime/benchmarks/run_baseline.py \
     --model both \
     --max-new-tokens 200 \
     --warmup 2 \
     --trials 5 \
-    --prompts benchmarks/prompts/mt_bench_subset.jsonl
+    --prompts runtime/benchmarks/prompts/mt_bench_subset.jsonl
 
 echo ""
 echo "Finished  : $(date)"
