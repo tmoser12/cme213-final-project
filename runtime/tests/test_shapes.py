@@ -1,6 +1,7 @@
 """Tests for shape helpers and memory planning."""
 
 import os
+from pathlib import Path
 import unittest
 
 from runtime.core.config import CONFIG_05B, CONFIG_7B, RuntimeConfig
@@ -12,7 +13,7 @@ class TestShapes(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         root = os.environ.get(
-            "PROJECT_ROOT", "/home/cme213/tobiascm/cme213-final-project"
+            "PROJECT_ROOT", str(Path(__file__).resolve().parents[2])
         )
         cls.cfg_7b = RuntimeConfig.from_yaml(CONFIG_7B, project_root=root)
         cls.cfg_05b = RuntimeConfig.from_yaml(CONFIG_05B, project_root=root)

@@ -6,6 +6,7 @@ models on the same device.
 """
 
 import os
+from pathlib import Path
 import unittest
 
 import torch
@@ -22,7 +23,7 @@ from runtime.core.weights import (
 )
 
 PROJECT_ROOT = os.environ.get(
-    "PROJECT_ROOT", "/home/cme213/tobiascm/cme213-final-project"
+    "PROJECT_ROOT", str(Path(__file__).resolve().parents[2])
 )
 REQUIRES_GPU = not torch.cuda.is_available()
 GPU_SKIP_REASON = "CUDA not available — run: bash slurm/run_tests_gpu.sh"

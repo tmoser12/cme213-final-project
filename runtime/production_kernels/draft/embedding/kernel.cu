@@ -1,4 +1,4 @@
-// src/kernels/embedding/kernel.cu
+// kernel_dev/target/kernels/embedding/kernel.cu
 // Custom CUDA embedding (indexed row gather) for Qwen2.5.
 //
 // Semantics: out[..., :] = weight[input_ids[...], :]

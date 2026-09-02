@@ -12,7 +12,7 @@ and they set ``self._static_ctx = (cos, sin, cur_len)``, which the core's
 ``_run_attention(static_attn=True)`` reads. One decode graph serves all S=1 steps;
 one VERIFY graph is captured per query length S (= γ or γ+1).
 
-Concepts: documentation/cuda_graphs_explained.md, cuda_graph_issues_and_concepts.md.
+Concepts: docs/cuda_graphs_explained.md, cuda_graph_issues_and_concepts.md.
 """
 
 from __future__ import annotations

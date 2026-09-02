@@ -1,7 +1,7 @@
-// src/kernels/swiglu/kernel.cu
+// kernel_dev/target/kernels/swiglu/kernel.cu
 // Custom CUDA SwiGLU MLP for Qwen2.5.
 //
-// Target op (src/models/modeling_qwen2.py Qwen2MLP.forward):
+// Target op (kernel_dev/models/modeling_qwen2.py Qwen2MLP.forward):
 //     down_proj( silu(gate_proj(x)) * up_proj(x) )
 //
 // Split of labor:
@@ -13,13 +13,13 @@
 //
 // swiglu_forward returns the down_proj output [M, H] -- i.e. the MLP result that
 // the decoder layer adds straight into the residual stream (the residual add
-// itself is a separate kernel; see the roadmap in CLAUDE.md). The standalone
+// itself is a separate kernel, see residual_ops/). The standalone
 // swiglu_act_forward(gate, up) is also exposed for granular kernel testing.
 //
 // The activation is memory-bound (read gate, read up, write hidden), so it
 // mirrors rmsnorm's float4 / half2 vectorized pattern: cast the half* buffers
 // to float4* for 128-bit loads/stores and do the silu*mul in fp32 on half2
-// lanes. See src/kernels/rmsnorm/kernel.cu and kernel_walkthrough.md.
+// lanes. See kernel_dev/target/kernels/rmsnorm/kernel.cu and kernel_walkthrough.md.
 
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>     // at::cuda::getCurrentCUDABlasHandle

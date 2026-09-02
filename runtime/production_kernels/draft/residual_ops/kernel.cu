@@ -1,4 +1,4 @@
-// src/kernels/residual_ops/kernel.cu
+// kernel_dev/target/kernels/residual_ops/kernel.cu
 // Two host-side ops the decoder loop needs once attention/swiglu/rmsnorm are in
 // place but before the final logits:
 //

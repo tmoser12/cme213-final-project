@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import math
 import os
+from pathlib import Path
 import unittest
 
 import torch
@@ -29,7 +30,7 @@ from runtime.production_kernels.target.attention import (
 from runtime.production_kernels.target.attention.ops import EXTENSION_MODULE
 
 PROJECT_ROOT = os.environ.get(
-    "PROJECT_ROOT", "/home/cme213/tobiascm/cme213-final-project"
+    "PROJECT_ROOT", str(Path(__file__).resolve().parents[2])
 )
 REQUIRES_GPU = not torch.cuda.is_available()
 GPU_SKIP = "CUDA not available — run via slurm/run_tests_gpu.sh"

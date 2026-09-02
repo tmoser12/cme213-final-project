@@ -4,7 +4,7 @@
 #
 # Usage (from project root):
 #   bash slurm/run_python.sh scripts/verify_env.py
-#   bash slurm/run_python.sh -m src.kernels.rmsnorm.benchmark
+#   bash slurm/run_python.sh -m kernel_dev.target.kernels.rmsnorm.benchmark
 #   bash slurm/run_python.sh scripts/my_script.py --flag value
 #   bash slurm/run_python.sh --gpus 2 -m package.module --arg value
 #
@@ -38,7 +38,7 @@ if [[ $# -eq 0 ]]; then
     echo ""
     echo "Examples:"
     echo "  bash slurm/run_python.sh scripts/verify_env.py"
-    echo "  bash slurm/run_python.sh -m src.kernels.rmsnorm.benchmark"
+    echo "  bash slurm/run_python.sh -m kernel_dev.target.kernels.rmsnorm.benchmark"
     echo "  bash slurm/run_python.sh --gpus 2 scripts/my_script.py --flag value"
     exit 1
 fi

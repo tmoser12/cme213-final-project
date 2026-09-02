@@ -4,7 +4,7 @@ A thin wrapper over a draft ``Qwen2Executor`` (kernel_set="draft") that produces
 γ speculative tokens for the target to verify and applies the target's feedback
 (n_accepted + bonus token). Mirrors the target-side ``target_step.py``.
 
-Protocol (draft rank), per documentation/speculative_decoding.md:
+Protocol (draft rank), per docs/speculative_decoding.md:
   1. ``prefill(prompt)`` once; q₁ = last prompt logit.
   2. ``generate_drafts(γ)`` → (draft_ids[γ], q_logits[γ+1, vocab]): sample x₁~q₁,
      then γ decode steps committing xᵢ and yielding q_{i+1}; collect q₁…q_{γ+1}.

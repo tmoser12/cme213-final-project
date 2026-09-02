@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Print 7B VRAM budget on GPU. Run via: bash slurm/run_tests_gpu.sh runtime.tests.print_7b_vram"""
 import os
+from pathlib import Path
 
 from runtime.core.config import RuntimeConfig, CONFIG_7B
 from runtime.core.weights import load_weights_on_gpu
 
-root = os.environ.get("PROJECT_ROOT", "/home/cme213/tobiascm/cme213-final-project")
+root = os.environ.get("PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))
 cfg = RuntimeConfig.from_yaml(CONFIG_7B, project_root=root)
 _, b = load_weights_on_gpu(cfg, batch=1, reserve_mib=512)
 

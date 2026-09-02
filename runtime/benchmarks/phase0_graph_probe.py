@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-runtime/benchmarks/phase0_graph_probe.py — CUDA Graph Phase 0 (see graph_plan.md).
+runtime/benchmarks/phase0_graph_probe.py — CUDA Graph Phase 0.
 
 Two things, no kernel changes:
 

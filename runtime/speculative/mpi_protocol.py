@@ -1,6 +1,6 @@
 """MPI wire format for 2-rank speculative decoding (Phase 8c).
 
-Ported from the test_mpi prototype. NumPy-only (the ``comm`` is passed in, so this
+Ported from the mpi_prototype prototype. NumPy-only (the ``comm`` is passed in, so this
 module does NOT import the MPI bindings — keeps the speculative package importable
 without an MPI stack). The coordinator is the only module that touches MPI.
 

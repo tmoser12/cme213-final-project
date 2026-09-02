@@ -1,8 +1,8 @@
-// src/kernels/attention/kernel.cu
+// kernel_dev/target/kernels/attention/kernel.cu
 // Custom CUDA attention sub-ops for Qwen2.5.
 //
 // Host launchers for the fused attention path. See
-// src/kernels/attention/wrapper.py for orchestration.
+// kernel_dev/target/kernels/attention/wrapper.py for orchestration.
 //   1. qkv_proj_forward      — fused QKV projection (cuBLAS GEMM, fp16)
 //   2. rope_kv_write_forward — rotate K (RoPE) + scatter K/V into paged cache
 //   3. fused_attn_forward    — causal SDPA, GQA-aware, fused RoPE on Q (prefill)
@@ -661,7 +661,7 @@ torch::Tensor fused_attn_forward(torch::Tensor q,
 // flash-decoding split-K over the KV axis.
 //
 // Correctness-first: this is deliberately simpler than the WMMA kernel. Two
-// optimizations are left for a later pass (see decode_attention_plan.md):
+// optimizations are left for a later pass (see docs/decode_attention_design.md):
 //   (1) split-K over grid.x to fill the GPU when B=1 (only h_q blocks today);
 //   (2) sharing each loaded KV tile across the 7 query heads in a GQA group.
 // ===========================================================================

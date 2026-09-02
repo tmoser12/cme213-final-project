@@ -1,6 +1,6 @@
 """Host-side stochastic speculative decoding sampler (Phase 8a).
 
-Implements steps 3–4 of documentation/speculative_decoding.md on CPU.
+Implements steps 3–4 of docs/speculative_decoding.md on CPU.
 """
 
 from __future__ import annotations
