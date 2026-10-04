@@ -5,6 +5,9 @@ or cancelled request resets both executors rather than flushing a final bonus.
 """
 
 
+# WALKTHROUGH [SPEC_LOOP] — see demo/WALKTHROUGH.md.
+# Draft IDs are tentative until the target accepts a prefix and chooses a bonus.
+# Yield before draft feedback so the browser can receive the verified block early.
 def speculative_chunks(target, draft, prompt, limit, gamma, eos_ids, *, verify=None):
     if verify is None:
         from runtime.speculative.target_step import greedy_target_step

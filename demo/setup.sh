@@ -15,6 +15,9 @@ fi
 .venv/bin/python -m pip install -r demo/requirements.txt
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-$(.venv/bin/python -c 'import torch; print("%d.%d" % torch.cuda.get_device_capability())')}"
 mkdir -p logs
+# WALKTHROUGH [BUILD] — see demo/WALKTHROUGH.md.
+# Compile the two roles before starting the server. Checkpoint downloads below
+# provide data; they do not compile or implement the model forward.
 BUILD_ROLE=target .venv/bin/python setup.py build_ext --inplace
 BUILD_ROLE=draft .venv/bin/python setup.py build_ext --inplace
 .venv/bin/hf download Qwen/Qwen2.5-7B-Instruct \

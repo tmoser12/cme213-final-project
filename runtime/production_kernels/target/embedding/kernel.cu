@@ -19,6 +19,9 @@ namespace {
 // dimension to copy one row of `weight` into one row of `output`. With H=3584
 // and blockDim.x=128 each thread touches 28 halves; per-warp loads are
 // contiguous so global memory accesses are fully coalesced.
+// WALKTHROUGH [TARGET_EMBED] — see demo/WALKTHROUGH.md.
+// One block gathers one vocabulary row. Adjacent threads read adjacent FP16
+// channels; this copies embeddings without arithmetic or a matrix multiplication.
 __global__ void embedding_kernel(
     const int64_t* __restrict__ input_ids,  // [N] (seq_len)
     const __half*  __restrict__ weight,     // [V, H] (152K, 3584)

@@ -41,6 +41,9 @@ class RuntimeConfig:
     layer_order: tuple[str, ...]
     kernel_set: str = "target"  # which production_kernels/<role>/ tree the executor uses
 
+    # WALKTHROUGH [CONFIG] — see demo/WALKTHROUGH.md.
+    # The role selects a compiled kernel tree; dimensions select model shapes.
+    # The server overrides paths/context but does not infer architecture from weights.
     @classmethod
     def from_yaml(cls, path: str | Path, project_root: str | Path | None = None) -> RuntimeConfig:
         data = yaml.safe_load(Path(path).read_text())

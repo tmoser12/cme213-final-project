@@ -18,10 +18,9 @@
 //       kernel is weight-source-agnostic and just GEMMs whatever it's given).
 //       A plain cuBLAS GEMM, identical to swiglu's gate/up/down and attention's
 //       qkv/o projections -- cuBLAS owns the 151936x896 matmul, no hand-rolled
-//       kernel would beat it. Returns fp16 logits [M, vocab] for whatever rows
-//       are passed in; the host pre-slices to the position(s) it needs (last
-//       token in decode, the gamma+1 candidates in spec-verify). Argmax/sampling
-//       stays out of here -- that belongs to the fused speculative sampler.
+//       kernel is used for this projection. Returns fp16 logits [M, vocab] for
+//       all supplied rows, including all prompt rows during prefill. Greedy
+//       argmax is performed by the serving/speculative Python code via PyTorch.
 //
 // The add mirrors rmsnorm/swiglu's float4 / half2 vectorization: cast half* to
 // float4* for 128-bit loads/stores, do the work on half2 lanes.
@@ -48,6 +47,9 @@
 // element count is covered. In-place safe (out may alias a or b): each lane
 // reads index i and writes index i.
 // ----------------------------------------------------------------------------
+// WALKTHROUGH [DRAFT_ADD] — see demo/WALKTHROUGH.md.
+// Add the branch result to the saved residual using packed half2 arithmetic.
+// The public launcher allocates a new output; it does not overwrite the residual.
 __global__ void residual_add_kernel(
     const __half* __restrict__ a,      // [numel]
     const __half* __restrict__ b,      // [numel]
@@ -131,6 +133,9 @@ torch::Tensor residual_add_forward(torch::Tensor a, torch::Tensor b) {
 // fp16 multiply, fp32 accumulate -- the exact GEMM config used by swiglu's
 // linear_no_bias and attention's qkv/o projections.
 // ----------------------------------------------------------------------------
+// WALKTHROUGH [DRAFT_HEAD] — see demo/WALKTHROUGH.md.
+// Project all supplied rows with cuBLAS, returning FP16 logits with FP32 GEMM
+// accumulation. Greedy argmax is a separate PyTorch operation in the caller.
 torch::Tensor lm_head_forward(torch::Tensor hidden, torch::Tensor weight) {
     TORCH_CHECK(hidden.is_cuda() && weight.is_cuda(),
                 "lm_head: hidden and weight must be CUDA tensors");

@@ -22,6 +22,9 @@ torch::Tensor swiglu_act_forward_py(const torch::Tensor& gate,
     return swiglu_act_forward(gate, up);
 }
 
+// WALKTHROUGH [DRAFT_SWIGLU_BINDING] — see demo/WALKTHROUGH.md.
+// Expose C++ host launchers as Python-callable functions. The wrappers release
+// the GIL while dispatching; tensor storage remains on the GPU.
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("swiglu_forward", &swiglu_forward_py,
           "Fused SwiGLU MLP: down_proj(silu(gate_proj(x)) * up_proj(x)) (fp16)");

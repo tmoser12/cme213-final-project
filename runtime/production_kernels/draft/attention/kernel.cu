@@ -32,6 +32,9 @@ using namespace nvcuda; // fa2
 
 
 // cuBLAS QKV Projection
+// WALKTHROUGH [DRAFT_QKV] — see demo/WALKTHROUGH.md.
+// One cuBLAS GEMM uses packed Q/K/V weights. Initialize output with bias and
+// use beta=1 so GEMM adds its product; projection is not hand-written CUDA.
 torch::Tensor qkv_proj_forward(torch::Tensor x,
                                torch::Tensor W_qkv,
                                torch::Tensor b_qkv) {
@@ -94,6 +97,9 @@ torch::Tensor qkv_proj_forward(torch::Tensor x,
 // (upper D/2 duplicates lower D/2), indexed by the LOCAL source row s; the
 // caller builds them at the K rows' absolute positions, so write_pos only
 // shifts the destination row in the cache. One block per (batch, kv_head).
+// WALKTHROUGH [DRAFT_KV_WRITE] — see demo/WALKTHROUGH.md.
+// Fuse key rotation and cache write, copy values unchanged, and leave Q rotation
+// to attention. Device-scalar positions allow the same launch to be graph-replayed.
 __global__ void rope_kv_write_kernel(
     const __half* __restrict__ new_k,     // [B, H_kv, S, D] src K (un-rotated)
     const int4*   __restrict__ new_v4,    // [B, H_kv, S, D] src V, viewed int4
@@ -242,6 +248,9 @@ void rope_kv_write_forward_dev(torch::Tensor new_k,
 }
 
 
+// WALKTHROUGH [DRAFT_PREFILL_ATTN] — see demo/WALKTHROUGH.md.
+// Tile prompt attention through shared memory and WMMA Tensor Core products.
+// Online softmax keeps running max/sum/output instead of storing an S-by-S matrix.
 template<int Q_BLOCK, int KV_BLOCK, int D, int NUM_THREADS,
          int WMMA_M, int WMMA_K, int WMMA_N>
 __launch_bounds__(NUM_THREADS, 2)
@@ -644,23 +653,16 @@ torch::Tensor fused_attn_forward(torch::Tensor q,
 // Decode-phase fused attention (small query length S: 1 = true single-token
 // decode, up to MAX_VERIFY = gamma+1 for speculative-decode verification).
 //
-// Same attention math as flash_attention_kernel above, but with NO Tensor
-// Cores: with only 1-8 query rows the op is memory-bound on the KV stream, so a
-// 16-row WMMA tile would waste >90% of its rows. Instead we compute plain
-// fp32-accumulated dot products against the KV cache with an online (flash)
-// softmax.
-//
-// One thread block owns one (batch, query_head). It streams the KV cache
-// [0, cur_len) in tiles of KV_TILE rows, keeping a running (max, denom, output
-// accumulator) per query row. grid.x is reserved (== 1 here) for a future
-// flash-decoding split-K over the KV axis.
-//
-// Correctness-first: this is deliberately simpler than the WMMA kernel. Two
-// optimizations are left for a later pass (see docs/decode_attention_design.md):
-//   (1) split-K over grid.x to fill the GPU when B=1 (only h_q blocks today);
-//   (2) sharing each loaded KV tile across the 7 query heads in a GQA group.
+// Same causal attention math as prefill, with FP32 scalar dot products rather
+// than WMMA for the 1..9 query rows. The fallback below uses one block per head;
+// launch_decode_attn can instead dispatch the split-KV and combine kernels.
+// Both paths maintain an online softmax and avoid a full attention-score matrix.
+// Grouped-query heads share stored KV data, but blocks still load it separately.
 // ===========================================================================
 
+// WALKTHROUGH [DRAFT_SMALL_ATTN] — see demo/WALKTHROUGH.md.
+// Small-query attention uses FP32 dot products and online softmax. For each
+// query row, absolute-position masking hides later drafts despite their KV writes.
 constexpr int MAX_VERIFY = 9;   // largest supported query length S (gamma <= 8, bundled S=gamma+1)
 
 template<int Q_TOKENS, int D, int KV_TILE, int NUM_THREADS>
@@ -815,7 +817,7 @@ __global__ void decode_attn_kernel(
 }
 
 // Shared host-side validation for the two decode launchers (mirrors the
-// fused_attn_forward checks, plus D==128 and cur_len>=S).
+// fused_attn_forward checks, plus the draft D==64 specialization).
 static void decode_attn_check(const torch::Tensor& q,
                               const torch::Tensor& cache_k,
                               const torch::Tensor& cache_v) {
@@ -858,6 +860,9 @@ static void decode_attn_check(const torch::Tensor& q,
 // ===========================================================================
 
 template<int Q_TOKENS, int D, int KV_TILE, int NUM_THREADS>
+// WALKTHROUGH [DRAFT_SPLIT] — see demo/WALKTHROUGH.md.
+// Partition the cache across blocks to expose parallel work at batch size one.
+// Each split emits unnormalized output plus its own softmax maximum and sum.
 __global__ void decode_attn_split_kernel(
     const __half* __restrict__ q,        // [B, h_q,  Q_TOKENS, D]
     const __half* __restrict__ cache_k,  // [B, h_kv, max_seq,  D]
@@ -1008,6 +1013,9 @@ __global__ void decode_attn_split_kernel(
 // Graph-safe as-is: grid (h_q, B) and num_splits are host constants, and empty
 // (m=-INF) splits are skipped, so this needs no device-scalar variant.
 template<int Q_TOKENS, int D>
+// WALKTHROUGH [DRAFT_COMBINE] — see demo/WALKTHROUGH.md.
+// Rescale split sums/outputs to a shared maximum before adding them. Simply
+// averaging independently normalized split outputs would give the wrong attention.
 __global__ void decode_attn_combine_kernel(
     const float* __restrict__ partial_o, // [B, h_q, num_splits, Q_TOKENS, D]
     const float* __restrict__ partial_m, // [B, h_q, num_splits, Q_TOKENS]
@@ -1057,6 +1065,9 @@ __global__ void decode_attn_combine_kernel(
 
 // Pick a split count that fills the SMs without over-splitting short contexts.
 // Returns 1 (single-kernel fallback) when the context is too short to benefit.
+// WALKTHROUGH [DRAFT_DISPATCH] — see demo/WALKTHROUGH.md.
+// Eager launch sizing uses current length; graph sizing uses capacity to keep
+// launch geometry fixed. The 72-SM heuristic is inherited tuning, not GPU detection.
 static inline int choose_num_splits(int cur_len, int h_q, int B) {
     constexpr int TARGET_BLOCKS = 2 * 72;   // ~2 waves on the RTX 6000 (72 SMs)
     constexpr int MIN_SPLIT_LEN = 256;      // keep each split's serial work meaningful
@@ -1237,6 +1248,9 @@ static void check_cur_len_dev(const torch::Tensor& cur_len) {
                 "decode_attn_dev: cur_len must be a 0-d int64 CUDA scalar");
 }
 
+// WALKTHROUGH [DRAFT_DEV] — see demo/WALKTHROUGH.md.
+// Read current sequence length from GPU memory so graph replay sees new tokens.
+// The S=1 query shape is fixed; the attended prefix length changes every replay.
 torch::Tensor decode_attn_forward_dev(torch::Tensor q,
                                       torch::Tensor cache_k,
                                       torch::Tensor cache_v,
@@ -1270,6 +1284,9 @@ torch::Tensor small_q_attn_forward_dev(torch::Tensor q,
 
 // 5. Output projection: y = x @ W_o^T  (no bias; matches Qwen2 o_proj).
 //    x:[M, H_q], W_o:[H, H_q] -> y:[M, H].
+// WALKTHROUGH [DRAFT_O_PROJ] — see demo/WALKTHROUGH.md.
+// Merge query heads in Python, then use cuBLAS to mix their channels back into
+// the hidden representation that is added to the layer residual.
 torch::Tensor o_proj_forward(torch::Tensor x, torch::Tensor W_o) {
     TORCH_CHECK(x.is_cuda() && W_o.is_cuda(),
                 "o_proj: x and W_o must be CUDA");

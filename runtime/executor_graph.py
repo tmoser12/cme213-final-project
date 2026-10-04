@@ -44,6 +44,9 @@ class GraphExecutorMixin:
 
     # --- Static / graph-capturable decode ------------------------
 
+    # WALKTHROUGH [GRAPH_INPUT] — see demo/WALKTHROUGH.md.
+    # Keep addresses fixed and copy new values into them. Host integers captured as
+    # launch arguments would otherwise freeze the cache position at capture time.
     def _prepare_decode_static(self, token_id: torch.Tensor) -> None:
         """
         Fill the static decode buffers for the current step. Runs OUTSIDE any
@@ -56,6 +59,9 @@ class GraphExecutorMixin:
         buf.cache_position.fill_(self._cache_pos)        # write_pos for this step
         buf.static_cur_len.fill_(self._cache_pos + 1)    # cur_len = write_pos + 1
 
+    # WALKTHROUGH [GRAPH_FORWARD] — see demo/WALKTHROUGH.md.
+    # Capture the entire one-token model forward, including RoPE lookup and each
+    # layer, rather than only attention. Python executes here at capture, not replay.
     def _decode_forward_static(self) -> torch.Tensor:
         """
         S=1 decode forward reading ONLY static buffers + device-scalar (`_dev`)
@@ -74,6 +80,9 @@ class GraphExecutorMixin:
 
     # --- CUDA-graph decode ---------------------------------------
 
+    # WALKTHROUGH [GRAPH_CAPTURE] — see demo/WALKTHROUGH.md.
+    # Warm library workspaces on a side stream before recording GPU operations.
+    # CUDA graph capture records existing compiled kernels; it does not compile them.
     def _capture_decode_graph(self) -> None:
         """
         Capture the static S=1 decode forward into a CUDA graph.
@@ -102,6 +111,9 @@ class GraphExecutorMixin:
         self._decode_graph_logits = logits
         self._graph_pool = pool
 
+    # WALKTHROUGH [GRAPH_REPLAY] — see demo/WALKTHROUGH.md.
+    # A replay reuses graph-owned intermediates and logits. The caller must consume
+    # or clone the live output before another replay overwrites it.
     def decode_step_graph(self, token_id: torch.Tensor) -> torch.Tensor:
         """
         One decode token via CUDA-graph replay — the launch-bound path collapsed

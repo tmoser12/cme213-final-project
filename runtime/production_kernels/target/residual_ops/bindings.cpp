@@ -16,6 +16,9 @@ torch::Tensor lm_head_forward_py(const torch::Tensor& hidden,
     return lm_head_forward(hidden, weight);
 }
 
+// WALKTHROUGH [TARGET_RESIDUAL_OPS_BINDING] — see demo/WALKTHROUGH.md.
+// Expose C++ host launchers as Python-callable functions. The wrappers release
+// the GIL while dispatching; tensor storage remains on the GPU.
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("residual_add_forward", &residual_add_forward_py,
           "Elementwise residual add: out = a + b (fp16, vectorized)");

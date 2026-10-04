@@ -6,6 +6,9 @@ from runtime.core.config import RuntimeConfig
 from runtime.core import shapes
 
 
+# WALKTHROUGH [PLAN] — see demo/WALKTHROUGH.md.
+# Estimate reserved tensor sizes. This is not a peak-memory measurement: packed
+# QKV copies, eager intermediates, and graph-pool allocations add more storage.
 def plan_memory(
     cfg: RuntimeConfig,
     batch: int | None = None,

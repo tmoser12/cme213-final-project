@@ -57,6 +57,9 @@ function busy(value) { for(const id of ['clear','prompt','limit','gamma']) $(id)
 $('clear').onclick=()=>{ messages=[]; $('chat').replaceChildren(); $('error').textContent=''; $('prompt').focus(); };
 $('stop').onclick=()=>controller?.abort();
 $('prompt').onkeydown=event=>{ if(event.key==='Enter'&&!event.shiftKey){ event.preventDefault(); if(!$('send').disabled) $('form').requestSubmit(); } };
+// WALKTHROUGH [SUBMIT] — see demo/WALKTHROUGH.md.
+// Send the complete conversation plus controls in one request. The server will
+// run both paths from these same messages; the browser does not load the models.
 $('form').onsubmit=async event=>{
   event.preventDefault(); if(controller) return;
   const prompt=$('prompt').value.trim(); if(!prompt) return;
@@ -65,6 +68,9 @@ $('form').onsubmit=async event=>{
   try {
     const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:pending,max_new_tokens:Number($('limit').value),gamma:Number($('gamma').value)}),signal:controller.signal});
     if(!response.ok) throw new Error((await response.json()).error||'Request failed.');
+    // WALKTHROUGH [READ_STREAM] — see demo/WALKTHROUGH.md.
+    // TextDecoder handles split UTF-8 bytes; buffer handles split JSON lines.
+    // A network chunk is not necessarily one token, round, or server event.
     const reader=response.body.getReader(), decoder=new TextDecoder(); let buffer='';
     while(true){
       const chunk=await reader.read(); if(chunk.done) break;
@@ -78,6 +84,9 @@ $('form').onsubmit=async event=>{
           turn.summary.textContent=`Speculative decoding: ${timing} end to end · ${result.identical_tokens?'Identical output tokens':'Output tokens differ — speed comparison is not like-for-like'}`;
           turn.summary.classList.toggle('warning',!result.identical_tokens); continue;
         }
+        // WALKTHROUGH [RENDER] — see demo/WALKTHROUGH.md.
+        // mode routes events to the left/right card. text is cumulative and assigned
+        // with textContent, so model output is rendered as text rather than executable HTML.
         const card=turn.cards[result.mode];
         if(result.type==='start'){ card.answer.textContent='Thinking…'; card.stats.textContent='Running'; continue; }
         card.text=result.text; card.answer.textContent=result.text||'(End of response)';
@@ -98,6 +107,9 @@ $('form').onsubmit=async event=>{
     turn.summary.textContent=stopped?'Comparison stopped.':'Comparison incomplete.';
     for(const card of Object.values(turn.cards)) if(!card.done){ card.stats.textContent=stopped?'Stopped':'Incomplete'; if(!card.text) card.answer.textContent='—'; }
   } finally {
+    // WALKTHROUGH [HISTORY] — see demo/WALKTHROUGH.md.
+    // Conversation history lives in this page. Each follow-up resends it and both
+    // models prefill from scratch; the completed request caches are not retained.
     // Only a completed baseline becomes conversation history. Speculative partial
     // output never changes the prompt used for a subsequent comparison.
     const target=turn.cards.target;
@@ -105,6 +117,8 @@ $('form').onsubmit=async event=>{
     controller=null; busy(false); $('prompt').focus();
   }
 };
+// WALKTHROUGH [HEALTH] — see demo/WALKTHROUGH.md.
+// Enable Compare only after the already-warmed server reports readiness.
 fetch('/health').then(response=>{if(!response.ok) throw new Error('Server unavailable');return response.json();}).then(info=>{
   ready=true; $('status').textContent=`● ${info.gpu} · Both models resident · ${info.max_context.toLocaleString()}-token context · Ready`; busy(false);
 }).catch(()=>{$('status').textContent='GPU server unavailable. Check the SSH tunnel and refresh.';});

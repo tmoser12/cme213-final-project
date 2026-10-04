@@ -19,6 +19,8 @@ Open **http://127.0.0.1:7860**. For a remote GPU, forward that port over SSH. [S
 
 ## Walk through the code
 
+For the full request lifecycle, read [demo/WALKTHROUGH.md](demo/WALKTHROUGH.md). It follows compilation, model loading, every decoder stage, speculative verification/cache rollback, and streamed text, with matching source comments and line references.
+
 | Order | File | What to explain |
 | --- | --- | --- |
 | 1 | [demo/index.html](demo/index.html) | One prompt, two streaming panels, timing and token agreement. |

@@ -16,11 +16,16 @@ class DraftRunner:
         ids = torch.tensor([token], dtype=torch.int64, device=self.executor.device)
         return self.executor.decode_step_graph(ids)
 
+    # WALKTHROUGH [DRAFT_PREFILL] — see demo/WALKTHROUGH.md.
+    # Keep an independent final-row copy; graph replay later reuses its output buffer.
     def prefill(self, input_ids: torch.Tensor) -> None:
         logits = self.executor.prefill(input_ids)
         self._last_logits = logits[0, -1].clone()
         self._prefix_len = self.executor.cache_pos
 
+    # WALKTHROUGH [DRAFT] — see demo/WALKTHROUGH.md.
+    # Each proposal depends on the previous one: gamma draft forwards are serial.
+    # Even the final proposal is decoded so its tentative KV state is present.
     def generate_drafts(self, gamma: int) -> torch.Tensor:
         """Propose γ greedy tokens and tentatively write them to the draft cache."""
         if self._last_logits is None:
@@ -38,6 +43,9 @@ class DraftRunner:
                 token = int(logits[0, -1].argmax().item())
         return torch.tensor([ids], dtype=torch.int64, device=self.executor.device)
 
+    # WALKTHROUGH [FEEDBACK] — see demo/WALKTHROUGH.md.
+    # The draft must consume the bonus now to predict the next proposal. Target
+    # can defer it because it will receive all proposals together in the next verify.
     def apply_target_feedback(self, n_accepted: int, bonus_token: int) -> None:
         """Discard rejected drafts, commit the target bonus, refresh next logits."""
         proposed = self.executor.cache_pos - self._prefix_len

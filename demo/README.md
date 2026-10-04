@@ -1,6 +1,6 @@
 # Run and validate the demo
 
-Start with the [repository code tour](../README.md) for the inference flow. This guide covers the single-GPU web app: 7B target, 0.5B draft, FP16, greedy decoding, batch size 1, a default 2048-token context, and up to 256 output tokens. Target decode and verification run eagerly; draft decode uses a CUDA graph.
+For the complete inference lifecycle, read [WALKTHROUGH.md](WALKTHROUGH.md); the [repository code tour](../README.md) is the short version. This guide covers the single-GPU web app: 7B target, 0.5B draft, FP16, greedy decoding, batch size 1, a default 2048-token context, and up to 256 output tokens. Target decode and verification run eagerly; draft decode uses a CUDA graph.
 
 ## GPU environment
 

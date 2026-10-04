@@ -15,6 +15,9 @@ from runtime.speculative.types import ForwardMode, MAX_VERIFY_GAMMA, MAX_VERIFY_
 _ATTN_HEAD_DIM = {"target": 128, "draft": 64}
 
 
+# WALKTHROUGH [IMPORT] — see demo/WALKTHROUGH.md.
+# Resolve five Python wrappers from the selected role. The returned callables
+# bridge executor steps to prebuilt extensions; no compilation happens here.
 def _import_kernels(kernel_set: str = "target"):
     if kernel_set not in _ATTN_HEAD_DIM:
         raise ValueError(
@@ -39,6 +42,9 @@ def _import_kernels(kernel_set: str = "target"):
     }
 
 
+# WALKTHROUGH [PACK_QKV] — see demo/WALKTHROUGH.md.
+# Concatenate Q/K/V weights once so each layer needs one projection GEMM.
+# These packed copies remain resident alongside the original weight dictionary.
 def _stack_qkv(
     weights: dict[str, torch.Tensor],
     layer: int,
@@ -63,6 +69,9 @@ def _stack_qkv(
     return w_qkv, b_qkv
 
 
+# WALKTHROUGH [EXECUTOR] — see demo/WALKTHROUGH.md.
+# The same orchestration serves target and draft, with separate weights/caches
+# and role-specific attention head dimensions. Graph support comes from the mixin.
 class Qwen2Executor(GraphExecutorMixin):
     """
     Config-driven decoder loop over pre-built CUDA kernel ops.
@@ -137,6 +146,9 @@ class Qwen2Executor(GraphExecutorMixin):
             return self.weights["model.embed_tokens.weight"]
         return self.weights["lm_head.weight"]
 
+    # WALKTHROUGH [RESET] — see demo/WALKTHROUGH.md.
+    # Request cleanup clears persistent KV contents, cursors, and pending bonus.
+    # Loaded weights and captured graph stay resident and are reused by the next query.
     def reset_kv_cache(self) -> None:
         """Zero KV caches and reset the sequence cursor (start of a new prompt)."""
         self.buffers.kv_cache_k.zero_()
@@ -146,9 +158,12 @@ class Qwen2Executor(GraphExecutorMixin):
         self._p1_logits = None
         self._pending_bonus = None
 
+    # WALKTHROUGH [BONUS] — see demo/WALKTHROUGH.md.
+    # The emitted bonus is logically accepted but not yet in the target KV cache.
+    # Bundling it with next round saves a separate target one-token forward.
     def defer_bonus_token(self, token_id: int) -> None:
         """
-        Queue a sampled bonus for the next bundled ``verify_gamma`` call.
+        Queue a greedy bonus for the next bundled ``verify_gamma`` call.
 
         The next target forward prepends this token before the draft IDs,
         combining the bonus commit and verification in one forward. The web
@@ -165,6 +180,9 @@ class Qwen2Executor(GraphExecutorMixin):
         return token
 
 
+    # WALKTHROUGH [ROLLBACK] — see demo/WALKTHROUGH.md.
+    # Rollback changes the valid prefix length, not the allocation. Future writes
+    # overwrite stale suffix rows, and causal/length bounds prevent reading them.
     def rollback_cache(self, to_pos: int) -> None:
         """
         Rewind sequence cursor after speculative verify + partial accept.
@@ -201,6 +219,9 @@ class Qwen2Executor(GraphExecutorMixin):
                 f"> max_seq_len={self.buffers.max_seq_len}"
             )
 
+    # WALKTHROUGH [ATTENTION] — see demo/WALKTHROUGH.md.
+    # Project and lay out Q/K/V, rotate/write K and copy V, choose the attention
+    # algorithm by mode, then merge heads and project back to hidden width.
     def _run_attention(
         self,
         x: torch.Tensor,
@@ -232,7 +253,7 @@ class Qwen2Executor(GraphExecutorMixin):
 
         if static_attn:
             # Graph-capturable path: positions come from device scalars and
-            # cos/sin from static buffers (refreshed before each replay via
+            # cos/sin gathered inside the graph (passed through
             # `_static_ctx`), so the captured graph isn't frozen at the
             # capture-time position. S=1 -> decode kernel; S>1 -> verify kernel.
             cos, sin, cur_len = self._static_ctx
@@ -282,6 +303,9 @@ class Qwen2Executor(GraphExecutorMixin):
         return out.reshape(batch, seq_len, cfg.hidden_size)
 
 
+    # WALKTHROUGH [LAYER] — see demo/WALKTHROUGH.md.
+    # Follow the configured pre-norm attention/residual/MLP/residual sequence.
+    # The unnormalized residual must survive while a normalized copy feeds each branch.
     def _run_decoder_layer(
         self,
         hidden: torch.Tensor,
@@ -346,6 +370,9 @@ class Qwen2Executor(GraphExecutorMixin):
 
         return hidden
 
+    # WALKTHROUGH [STACK] — see demo/WALKTHROUGH.md.
+    # Repeat the same layer structure with different weights/caches, then normalize
+    # and project EVERY input row to vocabulary logits, including all prompt rows.
     def _forward_stack(
         self,
         hidden: torch.Tensor,
@@ -366,6 +393,9 @@ class Qwen2Executor(GraphExecutorMixin):
         )
         return self._ops["lm_head_forward"](hidden, self._lm_head_weight())
 
+    # WALKTHROUGH [PREFILL] — see demo/WALKTHROUGH.md.
+    # Build all layers of KV state for the entire prompt in one causal forward.
+    # Keep the final prompt row to score the first draft before any draft is consumed.
     def prefill(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
         ``ForwardMode.PREFILL``: process prompt ``[batch, seq]``; reset KV cache.
@@ -389,6 +419,9 @@ class Qwen2Executor(GraphExecutorMixin):
         self._advance_cache_pos(seq_len)
         return logits
 
+    # WALKTHROUGH [VERIFY_FORWARD] — see demo/WALKTHROUGH.md.
+    # First round forwards gamma drafts; later rounds prepend the deferred bonus.
+    # Causal masking lets one target forward score all candidate continuations.
     def verify_gamma(
         self,
         draft_token_ids: torch.Tensor,
@@ -400,7 +433,7 @@ class Qwen2Executor(GraphExecutorMixin):
 
         **First post-prefill iter:** ``leading_bonus=None`` — forward over the γ
         drafts only (S=γ). Returns ``[batch, γ, vocab]`` = ``p_2 … p_{γ+1}``;
-        combine with ``p1_logits`` for sampling.
+        combine with ``p1_logits`` for greedy verification.
 
         **Subsequent iters:** pass the deferred bonus from the prior iter as
         ``leading_bonus``. One forward over ``[bonus, d_1, …, d_γ]`` (S=γ+1).
@@ -452,6 +485,9 @@ class Qwen2Executor(GraphExecutorMixin):
         self._advance_cache_pos(seq_len)
         return logits
 
+    # WALKTHROUGH [DECODE] — see demo/WALKTHROUGH.md.
+    # Consume one previously selected token and extend the target cache by one.
+    # Its output row predicts the following token, not the token just embedded.
     def decode_step(self, token_id: torch.Tensor) -> torch.Tensor:
         """
         ``ForwardMode.DECODE``: one committed token (S=1).

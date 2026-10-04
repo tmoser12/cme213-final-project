@@ -9,6 +9,9 @@ torch::Tensor forward_py(const torch::Tensor& input,
     return rmsnorm_forward(input, weight, eps);
 }
 
+// WALKTHROUGH [TARGET_RMSNORM_BINDING] — see demo/WALKTHROUGH.md.
+// Expose C++ host launchers as Python-callable functions. The wrappers release
+// the GIL while dispatching; tensor storage remains on the GPU.
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("forward", &forward_py, "Fused RMSNorm forward pass");
 }

@@ -6,6 +6,9 @@ import torch
 from runtime.executor import Qwen2Executor
 
 
+# WALKTHROUGH [VERIFY] — see demo/WALKTHROUGH.md.
+# Align each draft with logits for the prefix BEFORE that draft. Stop at the
+# first mismatch; logits after a rejected token no longer describe the accepted path.
 def greedy_target_step(target: Qwen2Executor, draft_ids: torch.Tensor) -> tuple[int, int]:
     """Greedy (argmax) verify of γ drafts against the target, with the bundled-bonus
     protocol. Accepts draft dᵢ iff dᵢ == argmax(pᵢ); bonus = target argmax at the

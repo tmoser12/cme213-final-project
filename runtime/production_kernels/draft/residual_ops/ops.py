@@ -6,6 +6,9 @@ _EXT_MODULE = "runtime.production_kernels.draft.residual_ops.draft_residual_ops"
 _BUILD_HINT = "Run: BUILD_ROLE=draft BUILD_KERNEL=residual_ops python setup.py build_ext --inplace"
 
 
+# WALKTHROUGH [DRAFT_RESIDUAL_OPS_WRAPPER] — see demo/WALKTHROUGH.md.
+# Import the prebuilt draft module; Python caches successful imports.
+# This boundary passes CUDA tensors by reference and never JIT-compiles a kernel.
 def _load_ext():
     try:
         from . import draft_residual_ops as ext

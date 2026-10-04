@@ -21,6 +21,9 @@ def logits(batch: int, seq: int, cfg: RuntimeConfig) -> tuple[int, int, int]:
     return (batch, seq, cfg.vocab_size)
 
 
+# WALKTHROUGH [KV_SHAPE] — see demo/WALKTHROUGH.md.
+# Each layer has its own K/V rows; grouped-query attention stores only KV heads.
+# Seven query heads share each KV head in both models.
 def kv_cache(batch: int, max_seq: int, cfg: RuntimeConfig) -> tuple[int, int, int, int, int]:
     """Layer-major: [num_layers, batch, num_kv_heads, max_seq, head_dim]."""
     return (

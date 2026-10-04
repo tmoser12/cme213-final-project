@@ -5,6 +5,8 @@ name: qwen2.5-0.5b-instruct
 model_path: models/Qwen2.5-0.5B-Instruct
 
 # Which production_kernels/<role>/ tree the executor uses (head_dim=64 -> draft)
+# WALKTHROUGH [DRAFT_CONFIG] — see demo/WALKTHROUGH.md.
+# This role must agree with head_dim and the executor attention specialization.
 kernel_set: draft
 
 # Architecture (matches models/Qwen2.5-0.5B-Instruct/config.json)

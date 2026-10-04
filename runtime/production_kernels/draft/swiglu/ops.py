@@ -6,6 +6,9 @@ _EXT_MODULE = "runtime.production_kernels.draft.swiglu.draft_swiglu_ops"
 _BUILD_HINT = "Run: BUILD_ROLE=draft BUILD_KERNEL=swiglu python setup.py build_ext --inplace"
 
 
+# WALKTHROUGH [DRAFT_SWIGLU_WRAPPER] — see demo/WALKTHROUGH.md.
+# Import the prebuilt draft module; Python caches successful imports.
+# This boundary passes CUDA tensors by reference and never JIT-compiles a kernel.
 def _load_ext():
     try:
         from . import draft_swiglu_ops as ext

@@ -80,6 +80,9 @@ def validate_weights(weights: dict[str, torch.Tensor], cfg: RuntimeConfig) -> No
         raise ValueError("tie_word_embeddings=true but lm_head.weight found on disk")
 
 
+# WALKTHROUGH [WEIGHTS] — see demo/WALKTHROUGH.md.
+# Load named tensors, validate their shapes, then cast/copy each to the GPU.
+# No Hugging Face model forward is constructed; names only identify parameters.
 def load_weights(
     cfg: RuntimeConfig,
     device: str | torch.device = "cuda",

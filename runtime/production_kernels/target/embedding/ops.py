@@ -6,6 +6,9 @@ _EXT_MODULE = "runtime.production_kernels.target.embedding.target_embedding_ops"
 _BUILD_HINT = "Run: BUILD_ROLE=target BUILD_KERNEL=embedding python setup.py build_ext --inplace"
 
 
+# WALKTHROUGH [TARGET_EMBEDDING_WRAPPER] — see demo/WALKTHROUGH.md.
+# Import the prebuilt target module; Python caches successful imports.
+# This boundary passes CUDA tensors by reference and never JIT-compiles a kernel.
 def _load_ext():
     try:
         from . import target_embedding_ops as ext

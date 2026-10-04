@@ -83,6 +83,9 @@ static torch::Tensor linear_no_bias(torch::Tensor x, torch::Tensor W) {
 // float4 = 128-bit load/store), grid-stride so any element count is covered.
 // In-place safe (out may alias gate): each lane reads index i and writes i.
 // ----------------------------------------------------------------------------
+// WALKTHROUGH [DRAFT_ACT] — see demo/WALKTHROUGH.md.
+// Fuse SiLU and multiplication so no standalone sigmoid/SiLU tensor is written.
+// Compute in FP32 registers, then pack back to FP16 for the down projection.
 __global__ void swiglu_act_kernel(
     const __half* __restrict__ gate,   // [numel]
     const __half* __restrict__ up,     // [numel]
@@ -173,6 +176,9 @@ torch::Tensor swiglu_act_forward(torch::Tensor gate, torch::Tensor up) {
 //   W_down:  [H, I]   (down_proj.weight)
 // Returns out: [M, H] -- the MLP output, ready to add to the residual stream.
 // ----------------------------------------------------------------------------
+// WALKTHROUGH [DRAFT_MLP] — see demo/WALKTHROUGH.md.
+// Three cuBLAS GEMMs surround one custom activation kernel. Only the elementwise
+// activation is fused; the whole MLP is not a single CUDA kernel.
 torch::Tensor swiglu_forward(torch::Tensor x,
                              torch::Tensor W_gate,
                              torch::Tensor W_up,

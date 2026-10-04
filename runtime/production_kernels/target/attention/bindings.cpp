@@ -117,6 +117,9 @@ torch::Tensor o_proj_forward_py(const torch::Tensor& x, const torch::Tensor& W_o
     return o_proj_forward(x, W_o);
 }
 
+// WALKTHROUGH [TARGET_ATTENTION_BINDING] — see demo/WALKTHROUGH.md.
+// Expose C++ host launchers as Python-callable functions. The wrappers release
+// the GIL while dispatching; tensor storage remains on the GPU.
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("qkv_proj_forward", &qkv_proj_forward_py,
           "Fused QKV projection (cuBLAS, fp16)");

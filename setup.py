@@ -58,6 +58,9 @@ def _extension_module(role: str, op: str) -> str:
     return f"runtime.production_kernels.{role}.{op}.{_module_basename(role, op)}"
 
 
+# WALKTHROUGH [EXTENSION] — see demo/WALKTHROUGH.md.
+# One shared library combines a Python binding with CUDA implementation code.
+# BuildExtension invokes the host compiler/nvcc; inference imports the result.
 def _make_extension(role: str, op: str) -> CUDAExtension:
     src_dir = KERNELS_ROOT / role / op
     return CUDAExtension(

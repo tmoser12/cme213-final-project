@@ -24,6 +24,9 @@ def _empty(shape: tuple[int, ...], *, cfg: RuntimeConfig, device: torch.device) 
     return torch.empty(shape, dtype=_dtype(cfg), device=device)
 
 
+# WALKTHROUGH [ROPE_TABLE] — see demo/WALKTHROUGH.md.
+# Compute position-dependent angles once. Eager forwards slice these tables;
+# graph forwards gather rows using a changing device-side position scalar.
 def build_rope_tables(
     cfg: RuntimeConfig,
     max_seq_len: int,
@@ -48,7 +51,7 @@ def build_rope_tables(
 
 @dataclass
 class RuntimeBuffers:
-    """Device-resident buffers sized by plan_memory(); no per-step allocation."""
+    """Persistent buffers sized by plan_memory(); eager ops also allocate outputs."""
 
     cfg: RuntimeConfig
     batch: int
@@ -147,6 +150,9 @@ class RuntimeBuffers:
         sin = sin.unsqueeze(0).expand(self.batch, -1, -1)
         return cos, sin
 
+    # WALKTHROUGH [GRAPH_ROPE] — see demo/WALKTHROUGH.md.
+    # The gather itself is captured. Updating cache_position changes the table rows
+    # on replay without changing tensor addresses or rebuilding the graph.
     def static_rope(self, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Gather RoPE cos/sin for the current device position, INSIDE the captured
@@ -170,6 +176,9 @@ class RuntimeBuffers:
         self.cache_position.fill_(value)
 
 
+# WALKTHROUGH [BUFFERS] — see demo/WALKTHROUGH.md.
+# Reserve persistent caches and graph inputs for each model separately. Other
+# activation tensors below are reserved, but eager ops still allocate outputs.
 def allocate_buffers(
     cfg: RuntimeConfig,
     batch: int | None = None,

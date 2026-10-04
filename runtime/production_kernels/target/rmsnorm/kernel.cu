@@ -41,6 +41,9 @@ __inline__ __device__ float blockReduceSum(float val) {
 // Highly Optimized Vectorized RMSNorm Kernel
 // ----------------------------------------------------------------------------
 
+// WALKTHROUGH [TARGET_NORM] — see demo/WALKTHROUGH.md.
+// Normalize each token independently across hidden channels. FP32 sums/reduction
+// protect the mean-square calculation; FP16 values are moved eight at a time.
 __global__ void rmsnorm_forward_kernel_vectorized(
     const half* __restrict__ input,
     const half* __restrict__ weight,
