@@ -1,10 +1,10 @@
-"""Phase D3 parity: draft Qwen2Executor (kernel_set=draft) vs HF Qwen2.5-0.5B.
+"""Parity: draft Qwen2Executor (kernel_set=draft) vs HF Qwen2.5-0.5B.
 
 Confirms the generalized executor runs the 0.5B model (head_dim=64, draft kernels)
 correctly: prefill + decode logits match HF, and the greedy trajectory matches
 HF generate(do_sample=False).
 
-Run: bash slurm/run_tests_gpu.sh runtime.tests.test_draft_executor
+Run: .venv/bin/python -m unittest runtime.tests.test_draft_executor
 """
 
 from __future__ import annotations

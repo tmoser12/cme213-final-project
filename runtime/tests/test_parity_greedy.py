@@ -1,4 +1,4 @@
-"""Stage 4 parity: multi-token greedy decode trajectory vs HF (Phase 6)."""
+"""Stage 4 parity: multi-token greedy decode trajectory vs HF."""
 
 from __future__ import annotations
 

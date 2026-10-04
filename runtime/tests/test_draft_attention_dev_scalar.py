@@ -1,11 +1,11 @@
-"""Phase D2 parity: draft device-scalar attention ops vs host-int ops (bit-exact).
+"""Parity: draft device-scalar attention ops vs host-int ops (bit-exact).
 
 Mirrors test_attention_dev_scalar but for the DRAFT kernels (head_dim=64,
 Qwen2.5-0.5B GQA: 14 q-heads / 2 kv-heads). The `_dev` variants read
 write_pos/cur_len from a 0-d int64 CUDA tensor; outside a graph they must compute
 exactly the same thing as the host-int path.
 
-Run: bash slurm/run_tests_gpu.sh runtime.tests.test_draft_attention_dev_scalar
+Run: .venv/bin/python -m unittest runtime.tests.test_draft_attention_dev_scalar
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from runtime.production_kernels.draft.attention import (
     small_q_attn_forward_dev,
 )
 
-GPU_SKIP = "CUDA not available — run via slurm/run_tests_gpu.sh"
+GPU_SKIP = "CUDA not available — run on a CUDA GPU after bash demo/setup.sh"
 
 # 0.5B draft attention dims (kernels templated on head_dim=64).
 NH, NKV, D = 14, 2, 64

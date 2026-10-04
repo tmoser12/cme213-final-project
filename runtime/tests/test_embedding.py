@@ -17,7 +17,7 @@ PROJECT_ROOT = os.environ.get(
     "PROJECT_ROOT", str(Path(__file__).resolve().parents[2])
 )
 REQUIRES_GPU = not torch.cuda.is_available()
-GPU_SKIP = "CUDA not available — run via slurm/run_tests_gpu.sh"
+GPU_SKIP = "CUDA not available — run on a CUDA GPU after bash demo/setup.sh"
 
 
 class TestEmbeddingAot(unittest.TestCase):

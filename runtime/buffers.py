@@ -1,4 +1,4 @@
-"""Pre-allocated GPU buffers for inference (Phase 4)."""
+"""Pre-allocated GPU buffers for inference."""
 
 from __future__ import annotations
 
@@ -12,9 +12,8 @@ from runtime.core import shapes
 
 _TORCH_DTYPE = {"fp16": torch.float16, "fp32": torch.float32}
 
-# Largest static query length a graph captures (decode S=1, verify S=γ+1 ≤ 9).
-# Matches speculative.types.MAX_VERIFY_SEQ_LEN; kept local to avoid a cross-import.
-MAX_STATIC_SEQ_LEN = 9
+# The only captured forward is single-token draft decode.
+MAX_STATIC_SEQ_LEN = 1
 
 
 def _dtype(cfg: RuntimeConfig) -> torch.dtype:
@@ -69,8 +68,8 @@ class RuntimeBuffers:
     rope_sin: torch.Tensor
     cache_position: torch.Tensor
 
-    # --- Static graph scratch (Phase 3 + RoPE folding) ---------------------
-    # Fixed-address inputs for the CUDA-graphed decode/verify forwards. Updated in
+    # --- Static graph scratch ---------------------
+    # Fixed-address inputs for the CUDA-graphed decode forward. Updated in
     # place before each replay; read by the captured graph. Sub-KB total, so
     # intentionally excluded from the seq-scaling memory plan / nbytes().
     static_input_ids: torch.Tensor   # [batch, 1] int64 — the decode token
@@ -228,33 +227,3 @@ def allocate_buffers(
         static_cur_len=torch.zeros((), dtype=torch.int64, device=dev),
         rope_arange=torch.arange(MAX_STATIC_SEQ_LEN, dtype=torch.int64, device=dev),
     )
-
-
-def buffer_fits_vram_budget(
-    cfg: RuntimeConfig,
-    weights: dict[str, torch.Tensor],
-    buffers: RuntimeBuffers,
-    reserve_mib: float = 512.0,
-) -> dict:
-    """
-    Check that weights + buffers leave at least reserve_mib headroom on the GPU.
-
-    Call after load_weights_on_gpu + allocate_buffers on the same device.
-    """
-    from runtime.core.weights import gpu_memory_snapshot, memory_report
-
-    dev_index = buffers.device.index if buffers.device.index is not None else 0
-    snap = gpu_memory_snapshot(dev_index)
-    w_bytes = memory_report(weights)["total_bytes"]
-    b_bytes = buffers.nbytes()
-    reserve_bytes = int(reserve_mib * 1024 * 1024)
-    fits = snap["free_bytes"] >= reserve_bytes
-    return {
-        "fits": fits,
-        "weights_bytes": w_bytes,
-        "buffers_bytes": b_bytes,
-        "reserve_bytes": reserve_bytes,
-        "gpu_free_bytes": snap["free_bytes"],
-        "gpu_reserved_bytes": snap["reserved_bytes"],
-        "gpu_total_bytes": snap["total_bytes"],
-    }

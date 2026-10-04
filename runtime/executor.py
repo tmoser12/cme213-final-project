@@ -1,4 +1,4 @@
-"""Qwen2 decoder executor — composes target CUDA kernels into a full forward pass."""
+"""Qwen2 decoder executor — composes target or draft CUDA kernels into a full forward pass."""
 
 from __future__ import annotations
 
@@ -107,7 +107,7 @@ class Qwen2Executor(GraphExecutorMixin):
         self._p1_logits: torch.Tensor | None = None
         self._pending_bonus: int | None = None
 
-        # CUDA-graph capture/replay state (decode + verify) lives in the mixin.
+        # CUDA-graph capture/replay state for decode lives in the mixin.
         self._init_graph_state(use_cuda_graph)
 
         self._qkv_weights: list[torch.Tensor] = []
@@ -128,13 +128,9 @@ class Qwen2Executor(GraphExecutorMixin):
 
     @property
     def p1_logits(self) -> torch.Tensor | None:
-        """Target p_1 from last ``prefill()`` or ``commit_pending_bonus()`` — ``[vocab]``."""
+        """Target p_1 from the last ``prefill()`` — ``[vocab]``."""
         return self._p1_logits
 
-    @property
-    def pending_bonus_token(self) -> int | None:
-        """Bonus token deferred for ``commit_pending_bonus()`` (MPI-friendly path)."""
-        return self._pending_bonus
 
     def _lm_head_weight(self) -> torch.Tensor:
         if self.cfg.tie_word_embeddings:
@@ -154,10 +150,9 @@ class Qwen2Executor(GraphExecutorMixin):
         """
         Queue a sampled bonus for the next bundled ``verify_gamma`` call.
 
-        After sample + rollback, MPI can notify the draft immediately. The next
-        target forward prepends this token before the γ draft ids (one VERIFY,
-        not a separate S=1 commit). Call ``commit_pending_bonus()`` only after
-        the final generation step.
+        The next target forward prepends this token before the draft IDs,
+        combining the bonus commit and verification in one forward. The web
+        serving iterator resets caches after the final round.
         """
         if self._pending_bonus is not None:
             raise RuntimeError("bonus already pending; consume or flush before deferring another")
@@ -169,22 +164,6 @@ class Qwen2Executor(GraphExecutorMixin):
         self._pending_bonus = None
         return token
 
-    def commit_pending_bonus(self) -> torch.Tensor | None:
-        """
-        Run ``decode_step`` on a deferred bonus after the **final** iteration.
-
-        Normal iterations bundle the bonus into the next ``verify_gamma`` instead.
-        Returns logits ``[batch, 1, vocab]`` or ``None`` if nothing was pending.
-        """
-        if self._pending_bonus is None:
-            return None
-        token_id = torch.tensor(
-            [self._pending_bonus], dtype=torch.int64, device=self.device
-        )
-        self._pending_bonus = None
-        logits = self.decode_step(token_id)
-        self._p1_logits = logits[0, 0, :].detach()
-        return logits
 
     def rollback_cache(self, to_pos: int) -> None:
         """
@@ -302,24 +281,6 @@ class Qwen2Executor(GraphExecutorMixin):
         out = ops.o_proj_forward(flat_ctx, w_o)
         return out.reshape(batch, seq_len, cfg.hidden_size)
 
-    def run_decoder_layer(
-        self,
-        hidden: torch.Tensor,
-        layer: int,
-        seq_len: int,
-        *,
-        mode: ForwardMode | None = None,
-        decode: bool = False,
-    ) -> torch.Tensor:
-        """
-        Run one decoder layer (parity / debugging).
-
-        Does not advance ``cache_position`` — use ``prefill`` / ``verify_gamma`` /
-        ``decode_step`` for full forwards.
-        """
-        if mode is None:
-            mode = ForwardMode.DECODE if decode else ForwardMode.PREFILL
-        return self._run_decoder_layer(hidden, layer, seq_len, mode=mode)
 
     def _run_decoder_layer(
         self,
@@ -433,7 +394,6 @@ class Qwen2Executor(GraphExecutorMixin):
         draft_token_ids: torch.Tensor,
         *,
         leading_bonus: int | None = None,
-        commit_bonus: int | None = None,
     ) -> torch.Tensor:
         """
         ``ForwardMode.VERIFY``: evaluate γ draft tokens against cached prefix.
@@ -447,12 +407,7 @@ class Qwen2Executor(GraphExecutorMixin):
         Returns ``[batch, γ+1, vocab]`` = ``p_1 … p_{γ+1}`` for accept/reject on
         the γ drafts only (bonus is written to KV but not re-verified).
 
-        ``commit_bonus`` is a deprecated alias for ``leading_bonus``.
         """
-        if commit_bonus is not None and leading_bonus is not None:
-            raise ValueError("pass only one of leading_bonus or commit_bonus")
-        if leading_bonus is None:
-            leading_bonus = commit_bonus
         if not _same_device(draft_token_ids.device, self.device):
             raise ValueError(
                 f"draft_token_ids on {draft_token_ids.device}, expected {self.device}"

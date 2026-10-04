@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 _EXT_MODULE = "runtime.production_kernels.target.rmsnorm.target_rmsnorm_ops"
-_BUILD_HINT = "Run: bash scripts/build_kernels.sh rmsnorm"
+_BUILD_HINT = "Run: BUILD_ROLE=target BUILD_KERNEL=rmsnorm python setup.py build_ext --inplace"
 
 
 def _load_ext():

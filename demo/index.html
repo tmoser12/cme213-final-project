@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CME213 · Speculative decoding</title>
+<style>
+:root { color-scheme:light; font:16px/1.55 system-ui,sans-serif; color:#202922; background:#f4f5f0; }
+* { box-sizing:border-box; } body { margin:0; } main { max-width:1180px; margin:auto; padding:32px 22px; }
+.eyebrow,.label { font:11px/1.5 ui-monospace,monospace; letter-spacing:.09em; color:#55705c; text-transform:uppercase; }
+h1 { font-size:30px; font-weight:600; letter-spacing:-.04em; margin:8px 0; } .subtitle { margin:0; color:#5c665e; }
+.status { font-size:13px; margin:14px 0 24px; color:#52705a; } .empty { padding:50px 10px; text-align:center; color:#6b756c; }
+.turn { margin:24px 0 32px; } .question { white-space:pre-wrap; overflow-wrap:anywhere; background:#e9eee4; padding:14px 18px; border-radius:10px; margin:6px 0 16px; }
+.panels { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; }
+.panel { border:1px solid #d8e1d4; background:white; border-radius:12px; padding:17px; min-width:0; }
+.panel h2 { font-size:16px; margin:0; font-weight:600; } .detail { font-size:12px; color:#768077; margin:2px 0 14px; }
+.answer { white-space:pre-wrap; overflow-wrap:anywhere; min-height:120px; font-size:15px; }
+.metrics { color:#687469; font:11px/1.8 ui-monospace,monospace; margin-top:15px; border-top:1px solid #edf0e9; padding-top:9px; }
+.summary { font-size:13px; padding:11px 3px; color:#355c40; } .warning { color:#a33428; }
+form { border:1px solid #cdd6c9; border-radius:14px; padding:14px; background:#fff; }
+textarea { width:100%; resize:vertical; min-height:78px; border:0; outline:none; font:inherit; background:transparent; }
+.controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; } label { color:#667067; font-size:12px; }
+select,button { font:inherit; border:1px solid #cdd6c9; border-radius:8px; padding:7px 10px; background:#fff; }
+button { cursor:pointer; } button.primary { background:#254d35; color:#fff; border-color:#254d35; margin-left:auto; }
+button:disabled { opacity:.5; cursor:default; } #error { color:#a33428; margin:12px 0; min-height:20px; font-size:14px; }
+footer { color:#7b847c; font-size:12px; margin-top:14px; } :focus-visible { outline:2px solid #527d5a; outline-offset:3px; }
+@media(max-width:540px) { .panels { grid-template-columns:1fr; } main { padding:22px 14px; } h1 { font-size:25px; } }
+</style>
+<main>
+<header><div class="eyebrow">CME213 / Inference demo</div><h1>One prompt. Two decoding paths.</h1>
+<p class="subtitle">Custom CUDA kernels · Qwen2.5-7B target + 0.5B draft · FP16</p><div class="status" id="status">Connecting to GPU…</div></header>
+<section id="chat" aria-label="Conversation"><div class="empty">Watch target-only generation first, then target-verified speculative decoding.</div></section>
+<div id="error" role="alert"></div>
+<form id="form"><textarea id="prompt" aria-label="Your message" placeholder="Ask both decoding paths the same question…" maxlength="16000" required></textarea>
+<div class="controls"><label>Max output <select id="limit"><option>64</option><option selected>128</option><option>256</option></select></label>
+<label>Draft tokens / round <select id="gamma"><option>1</option><option>2</option><option selected>4</option><option>8</option></select></label>
+<button type="button" id="clear">New chat</button><button type="button" id="stop" hidden>Stop</button><button class="primary" id="send" disabled>Compare ↗</button></div></form>
+<footer>Both models stay on one GPU. Runs are sequential and greedy; speculative text appears only after target verification. Timings include prefill and streaming, but exclude waiting for the other run. Follow-ups use the target-only answer. Enter to send · Shift+Enter for a new line.</footer>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let messages = [], controller = null, ready = false;
+function element(tag, cls, text) { const node = document.createElement(tag); node.className = cls; node.textContent = text; return node; }
+function makeTurn(prompt) {
+  document.querySelector('.empty')?.remove();
+  const wrapper = element('article','turn',''); wrapper.append(element('div','label','You'),element('div','question',prompt));
+  const panels = element('div','panels',''), cards = {};
+  for (const [mode,title,detail] of [['target','Target only','7B · autoregressive'],['speculative','Speculative decoding','0.5B drafts → 7B verifies']]) {
+    const panel = element('section','panel',''); panel.setAttribute('aria-label',title);
+    const answer = element('div','answer','Waiting…'), stats = element('div','metrics','Queued');
+    panel.append(element('h2','',title),element('div','detail',detail),answer,stats); panels.append(panel);
+    cards[mode] = {answer,stats,done:false,text:''};
+  }
+  const summary = element('div','summary','Target-only runs first; speculative decoding follows.'); summary.setAttribute('role','status');
+  wrapper.append(panels,summary); $('chat').append(wrapper); return {wrapper,cards,summary};
+}
+function busy(value) { for(const id of ['clear','prompt','limit','gamma']) $(id).disabled=value; $('send').disabled=value||!ready; $('stop').hidden=!value; }
+$('clear').onclick=()=>{ messages=[]; $('chat').replaceChildren(); $('error').textContent=''; $('prompt').focus(); };
+$('stop').onclick=()=>controller?.abort();
+$('prompt').onkeydown=event=>{ if(event.key==='Enter'&&!event.shiftKey){ event.preventDefault(); if(!$('send').disabled) $('form').requestSubmit(); } };
+$('form').onsubmit=async event=>{
+  event.preventDefault(); if(controller) return;
+  const prompt=$('prompt').value.trim(); if(!prompt) return;
+  $('error').textContent=''; const turn=makeTurn(prompt), pending=[...messages,{role:'user',content:prompt}];
+  let compared=false; controller=new AbortController(); busy(true);
+  try {
+    const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:pending,max_new_tokens:Number($('limit').value),gamma:Number($('gamma').value)}),signal:controller.signal});
+    if(!response.ok) throw new Error((await response.json()).error||'Request failed.');
+    const reader=response.body.getReader(), decoder=new TextDecoder(); let buffer='';
+    while(true){
+      const chunk=await reader.read(); if(chunk.done) break;
+      buffer+=decoder.decode(chunk.value,{stream:true}); const lines=buffer.split('\n'); buffer=lines.pop();
+      for(const line of lines){
+        if(!line.trim()) continue; const result=JSON.parse(line);
+        if(result.type==='error') throw new Error(result.error);
+        if(result.type==='comparison'){
+          compared=true;
+          const timing=result.speedup>=1 ? `${result.speedup.toFixed(2)}× faster` : `${(1/result.speedup).toFixed(2)}× slower`;
+          turn.summary.textContent=`Speculative decoding: ${timing} end to end · ${result.identical_tokens?'Identical output tokens':'Output tokens differ — speed comparison is not like-for-like'}`;
+          turn.summary.classList.toggle('warning',!result.identical_tokens); continue;
+        }
+        const card=turn.cards[result.mode];
+        if(result.type==='start'){ card.answer.textContent='Thinking…'; card.stats.textContent='Running'; continue; }
+        card.text=result.text; card.answer.textContent=result.text||'(End of response)';
+        if(result.type==='token') card.stats.textContent=`${result.output_tokens} output tokens${result.mode==='speculative'?` · ${result.rounds} verification rounds`:''}`;
+        if(result.type==='done'){
+          card.done=true;
+          card.stats.textContent=`${result.output_tokens} output tokens · ${result.tokens_per_second} tok/s\n${result.ttft_ms} ms to first ${result.mode==='speculative'?'verified chunk':'token'} · ${result.elapsed_seconds.toFixed(2)}s total`;
+          if(result.mode==='speculative') card.stats.textContent+=`\n${result.accepted}/${result.proposed} drafts accepted (${Math.round(100*result.accepted/result.proposed)}%) · ${result.rounds} rounds`;
+          if(result.finish_reason==='length') card.stats.textContent+=' · Output limit reached';
+          card.stats.style.whiteSpace='pre-line';
+        }
+      }
+    }
+    if(!compared) throw new Error('The connection ended before the comparison completed.');
+  } catch(error){
+    const stopped=error.name==='AbortError';
+    if(!stopped) $('error').textContent=error.message;
+    turn.summary.textContent=stopped?'Comparison stopped.':'Comparison incomplete.';
+    for(const card of Object.values(turn.cards)) if(!card.done){ card.stats.textContent=stopped?'Stopped':'Incomplete'; if(!card.text) card.answer.textContent='—'; }
+  } finally {
+    // Only a completed baseline becomes conversation history. Speculative partial
+    // output never changes the prompt used for a subsequent comparison.
+    const target=turn.cards.target;
+    if(target.done&&target.text){ messages=[...pending,{role:'assistant',content:target.text}]; $('prompt').value=''; }
+    controller=null; busy(false); $('prompt').focus();
+  }
+};
+fetch('/health').then(response=>{if(!response.ok) throw new Error('Server unavailable');return response.json();}).then(info=>{
+  ready=true; $('status').textContent=`● ${info.gpu} · Both models resident · ${info.max_context.toLocaleString()}-token context · Ready`; busy(false);
+}).catch(()=>{$('status').textContent='GPU server unavailable. Check the SSH tunnel and refresh.';});
+</script>
+</html>

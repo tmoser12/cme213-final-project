@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 _EXT_MODULE = "runtime.production_kernels.target.embedding.target_embedding_ops"
-_BUILD_HINT = "Run: bash scripts/build_kernels.sh embedding"
+_BUILD_HINT = "Run: BUILD_ROLE=target BUILD_KERNEL=embedding python setup.py build_ext --inplace"
 
 
 def _load_ext():

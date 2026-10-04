@@ -35,7 +35,6 @@ class RuntimeConfig:
     hidden_act: str
     dtype: str
     accum_dtype: str
-    cuda_arch: str
     max_batch: int
     max_seq_len: int
     kv_cache_layout: str
@@ -69,7 +68,6 @@ class RuntimeConfig:
             hidden_act=str(data["hidden_act"]),
             dtype=str(data["dtype"]),
             accum_dtype=str(data["accum_dtype"]),
-            cuda_arch=str(data["cuda_arch"]),
             max_batch=int(data["max_batch"]),
             max_seq_len=int(data["max_seq_len"]),
             kv_cache_layout=str(data["kv_cache_layout"]),

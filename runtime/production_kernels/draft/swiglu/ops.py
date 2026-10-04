@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 _EXT_MODULE = "runtime.production_kernels.draft.swiglu.draft_swiglu_ops"
-_BUILD_HINT = "Run: bash scripts/build_kernels.sh draft swiglu"
+_BUILD_HINT = "Run: BUILD_ROLE=draft BUILD_KERNEL=swiglu python setup.py build_ext --inplace"
 
 
 def _load_ext():

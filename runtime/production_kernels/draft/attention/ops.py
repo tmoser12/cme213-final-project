@@ -7,7 +7,7 @@ from typing import Optional
 import torch
 
 _EXT_MODULE = "runtime.production_kernels.draft.attention.draft_attention_ops"
-_BUILD_HINT = "Run: bash scripts/build_kernels.sh draft attention"
+_BUILD_HINT = "Run: BUILD_ROLE=draft BUILD_KERNEL=attention python setup.py build_ext --inplace"
 
 
 def _load_ext():

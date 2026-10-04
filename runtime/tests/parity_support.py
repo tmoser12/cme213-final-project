@@ -1,4 +1,4 @@
-"""Shared helpers for staged HF parity tests (Phase 6)."""
+"""Shared Hugging Face reference helpers for model parity tests."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM
 
-from runtime.buffers import RuntimeBuffers, allocate_buffers
+from runtime.buffers import allocate_buffers
 from runtime.core.config import CONFIG_7B, RuntimeConfig
 from runtime.core.weights import expected_keys
 from runtime.executor import Qwen2Executor
@@ -16,15 +16,13 @@ from runtime.tests._support import PROJECT_ROOT
 
 LOGITS_ATOL = 0.5
 LOGITS_RTOL = 0.05
-HIDDEN_ATOL = 0.5
-HIDDEN_RTOL = 0.05
 
 HAS_7B_WEIGHTS = os.path.isfile(
     Path(PROJECT_ROOT) / "models/Qwen2.5-7B-Instruct/model-00001-of-00004.safetensors"
 )
 
 REQUIRES_GPU = not torch.cuda.is_available()
-GPU_SKIP = "CUDA not available — run via slurm/run_tests_gpu.sh"
+GPU_SKIP = "CUDA not available — run on a CUDA GPU after bash demo/setup.sh"
 
 
 def weights_from_hf_model(
@@ -56,51 +54,12 @@ def load_hf_and_executor(
     return hf, executor
 
 
-def capture_decoder_layer(
-    hf_model: AutoModelForCausalLM,
-    input_ids: torch.Tensor,
-    layer_idx: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return (hidden_in, hidden_out) for one HF decoder layer via forward hook."""
-    storage: dict[str, torch.Tensor] = {}
-
-    def hook(_module, inputs, output) -> None:
-        storage["input"] = inputs[0].detach()
-        storage["output"] = output[0].detach()
-
-    handle = hf_model.model.layers[layer_idx].register_forward_hook(hook)
-    try:
-        with torch.no_grad():
-            hf_model(input_ids)
-    finally:
-        handle.remove()
-
-    return storage["input"], storage["output"]
-
-
-def reset_layer_kv(executor: Qwen2Executor, layer_idx: int) -> None:
-    """Zero one layer's KV slice and reset sequence cursor for isolated layer tests."""
-    executor.buffers.kv_cache_k_layer(layer_idx).zero_()
-    executor.buffers.kv_cache_v_layer(layer_idx).zero_()
-    executor.buffers.reset_cache_position(0)
-    executor._cache_pos = 0
-
-
 def logits_allclose(expected: torch.Tensor, actual: torch.Tensor) -> bool:
     return torch.allclose(
         expected.float(),
         actual.float(),
         atol=LOGITS_ATOL,
         rtol=LOGITS_RTOL,
-    )
-
-
-def hidden_allclose(expected: torch.Tensor, actual: torch.Tensor) -> bool:
-    return torch.allclose(
-        expected.float(),
-        actual.float(),
-        atol=HIDDEN_ATOL,
-        rtol=HIDDEN_RTOL,
     )
 
 

@@ -1,10 +1,10 @@
-"""Phase D4 correctness: CUDA-graph draft decode vs eager (bit-exact trajectory).
+"""Correctness: CUDA-graph draft decode vs eager (bit-exact trajectory).
 
 The draft (0.5B) reuses the same decode-graph machinery as the target. Replaying
 the captured graph must reproduce eager `decode_step` exactly and stay correct as
 the position advances. No HF needed — compares two of our own forward paths.
 
-Run: bash slurm/run_tests_gpu.sh runtime.tests.test_draft_decode_graph
+Run: .venv/bin/python -m unittest runtime.tests.test_draft_decode_graph
 """
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ import unittest
 import torch
 
 from runtime.core.config import RuntimeConfig, CONFIG_05B
-from runtime.core.weights import load_weights_on_gpu
+from runtime.core.weights import load_weights
 from runtime.buffers import allocate_buffers
 from runtime.executor import Qwen2Executor
 
-GPU_SKIP = "CUDA not available — run via slurm/run_tests_gpu.sh"
+GPU_SKIP = "CUDA not available — run on a CUDA GPU after bash demo/setup.sh"
 PROMPT_LEN = 24
 MAX_SEQ = 128
 N_STEPS = 8
@@ -29,12 +29,17 @@ class TestDraftDecodeGraph(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.cfg = RuntimeConfig.from_yaml(CONFIG_05B)
-        cls.weights, _ = load_weights_on_gpu(cls.cfg, batch=1, device="cuda")
+        cls.weights = load_weights(cls.cfg, device="cuda")
         cls.buffers = allocate_buffers(cls.cfg, batch=1, max_seq_len=MAX_SEQ, device="cuda")
         cls.ex = Qwen2Executor(cls.cfg, cls.weights, cls.buffers)
         torch.manual_seed(0)
         cls.prompt = torch.randint(0, cls.cfg.vocab_size, (1, PROMPT_LEN),
                                    dtype=torch.int64, device="cuda")
+
+    @classmethod
+    def tearDownClass(cls):
+        del cls.ex, cls.buffers, cls.weights, cls.prompt
+        torch.cuda.empty_cache()
 
     def _tok(self, t: int) -> torch.Tensor:
         return torch.tensor([t], dtype=torch.int64, device="cuda")

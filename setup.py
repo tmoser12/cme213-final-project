@@ -14,27 +14,8 @@ Each op compiles to ``<role>_<op>_ops`` colocated with its ops.py, e.g.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-
-def _sanitize_env_for_nvcc() -> None:
-    """Strip NVHPC from env so PyTorch extensions compile with g++/nvcc."""
-    paths = os.environ.get("PATH", "").split(":")
-    paths = [p for p in paths if "nvidia-hpc-sdk" not in p and "/nvhpc/" not in p]
-    os.environ["PATH"] = ":".join(paths)
-
-    for var in ["CC", "CXX", "CUDA_HOME", "CUDA_PATH", "NVCC_CCBIN"]:
-        val = os.environ.get(var, "").lower()
-        if "nvhpc" in val or "nvidia-hpc-sdk" in val or "nvc" in val:
-            os.environ.pop(var, None)
-
-    nvcc_path = shutil.which("nvcc")
-    if nvcc_path:
-        os.environ["CUDA_HOME"] = os.path.dirname(os.path.dirname(nvcc_path))
-
-
-_sanitize_env_for_nvcc()
 
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
@@ -42,7 +23,10 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 ROOT = Path(__file__).resolve().parent
 KERNELS_ROOT = ROOT / "runtime" / "production_kernels"
 
-NVCC_FLAGS = ["-O3", "--use_fast_math", "-arch=sm_75"]
+# Let PyTorch select the visible GPU, or honor TORCH_CUDA_ARCH_LIST for builds
+# without a GPU (e.g. 8.9 on an RTX 4090).
+# A hard-coded -arch suppresses PyTorch's architecture selection entirely.
+NVCC_FLAGS = ["-O3", "--use_fast_math"]
 CXX_FLAGS = ["-O3"]
 
 ROLES = ("target", "draft")

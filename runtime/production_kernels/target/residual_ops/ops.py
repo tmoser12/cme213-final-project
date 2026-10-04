@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 _EXT_MODULE = "runtime.production_kernels.target.residual_ops.target_residual_ops"
-_BUILD_HINT = "Run: bash scripts/build_kernels.sh residual_ops"
+_BUILD_HINT = "Run: BUILD_ROLE=target BUILD_KERNEL=residual_ops python setup.py build_ext --inplace"
 
 
 def _load_ext():

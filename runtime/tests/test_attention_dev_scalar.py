@@ -5,7 +5,7 @@ instead of a host int, so a CUDA graph can update the position between replays.
 Outside a graph they must compute *exactly* the same thing as the host-int path.
 This test asserts bit-exact equality at several positions; it does NOT need HF.
 
-Run: bash slurm/run_tests_gpu.sh runtime.tests.test_attention_dev_scalar
+Run: .venv/bin/python -m unittest runtime.tests.test_attention_dev_scalar
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from runtime.production_kernels.target.attention import (
     small_q_attn_forward_dev,
 )
 
-GPU_SKIP = "CUDA not available — run via slurm/run_tests_gpu.sh"
+GPU_SKIP = "CUDA not available — run on a CUDA GPU after bash demo/setup.sh"
 
 # 7B attention dims (kernels are templated on head_dim=128).
 NH, NKV, D = 28, 4, 128

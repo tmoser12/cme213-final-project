@@ -20,10 +20,9 @@ max_position_embeddings: 32768
 tie_word_embeddings: false
 hidden_act: silu
 
-# Runtime policy (Quadro RTX 6000 / Turing)
+# Runtime dtype policy; the build detects the GPU architecture.
 dtype: fp16
 accum_dtype: fp32
-cuda_arch: sm_75
 
 # Default inference limits (override at call time)
 max_batch: 1

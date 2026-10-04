@@ -12,6 +12,7 @@ build/
 __pycache__/
 *.pyc
 *.egg-info/
+.venv/
 
 # editor / agent scratch
 .cursor/
