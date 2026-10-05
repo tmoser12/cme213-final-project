@@ -1,0 +1,9 @@
+Profiling target layer 0: prefix=512, query=1, iterations=10
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-root/nsys-report-ab08.qdstrm'
+[1/1] [0%                          ] target_layer0_decode_ctx512.nsys-repProcessing events...
+[1/1] [0%                          ] target_layer0_decode_ctx512.nsys-rep[1/1] [======35%                   ] target_layer0_decode_ctx512.nsys-rep[1/1] [==========49%               ] target_layer0_decode_ctx512.nsys-rep[1/1] [==============62%           ] target_layer0_decode_ctx512.nsys-rep[1/1] [========================100%] target_layer0_decode_ctx512.nsys-rep[1/1] [========================100%] target_layer0_decode_ctx512.nsys-rep
+Profile region completed; outputs match unannotated production layer bitwise.
+Generated:
+	/workspace/cme213-demo/benchmarks/target_layer0_decode_ctx512.nsys-rep

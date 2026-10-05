@@ -232,7 +232,7 @@ For an eager forward, `write_pos` comes from the executor's host cache cursor. `
 
 For a paired first-half/second-half key component `(x0, x1)`, RoPE computes `(x0*c - x1*s, x1*c + x0*s)`. The kernel performs this rotation as it writes K, saving a separate rotated-K tensor and kernel pass. V is copied unchanged using packed memory accesses. Q remains unrotated at this boundary; the attention kernel rotates it after loading it into shared memory.
 
-There is one launch block per batch/KV-head pair. The cache cursor is advanced by the executor after the **whole model forward**, not once per layer: every layer writes the same token positions into its own cache slice.
+There is one launch block per batch/KV-head pair and 16-row sequence tile. Short decode inputs use one tile; long prefills expose many independent blocks. The cache cursor is advanced by the executor after the **whole model forward**, not once per layer: every layer writes the same token positions into its own cache slice.
 
 ## 13. Attention: select the correct workload
 

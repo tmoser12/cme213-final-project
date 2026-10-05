@@ -1,0 +1,25 @@
+test_busy_request_does_not_touch_shared_cache (demo.test_server.TestDemoHTTP.test_busy_request_does_not_touch_shared_cache) ... 127.0.0.1 - - [05/Oct/2026 18:31:26] "POST /api/chat HTTP/1.1" 409 -
+ok
+test_context_error_is_a_normal_http_error (demo.test_server.TestDemoHTTP.test_context_error_is_a_normal_http_error) ... 127.0.0.1 - - [05/Oct/2026 18:31:26] "POST /api/chat HTTP/1.1" 400 -
+ok
+test_cross_origin_request_is_rejected (demo.test_server.TestDemoHTTP.test_cross_origin_request_is_rejected) ... 127.0.0.1 - - [05/Oct/2026 18:31:27] "POST /api/chat HTTP/1.1" 403 -
+ok
+test_reject_invalid_message_order_and_limits (demo.test_server.TestDemoHTTP.test_reject_invalid_message_order_and_limits) ... ok
+test_stream_completes_and_releases_engine (demo.test_server.TestDemoHTTP.test_stream_completes_and_releases_engine) ... 127.0.0.1 - - [05/Oct/2026 18:31:28] "POST /api/chat HTTP/1.1" 200 -
+ok
+test_disconnect_closes_both_caches_before_next_round (demo.test_decoding.TestSpeculativeStream.test_disconnect_closes_both_caches_before_next_round) ... ok
+test_eos_bonus_stops (demo.test_decoding.TestSpeculativeStream.test_eos_bonus_stops) ... ok
+test_eos_inside_accepted_chunk_stops_without_feedback (demo.test_decoding.TestSpeculativeStream.test_eos_inside_accepted_chunk_stops_without_feedback) ... ok
+test_final_round_reduces_gamma_and_discards_extra_bonus (demo.test_decoding.TestSpeculativeStream.test_final_round_reduces_gamma_and_discards_extra_bonus) ... ok
+test_rejection_only_emits_accepted_prefix_and_bonus (demo.test_decoding.TestSpeculativeStream.test_rejection_only_emits_accepted_prefix_and_bonus) ... ok
+test_verification_failure_cleans_both_caches (demo.test_decoding.TestSpeculativeStream.test_verification_failure_cleans_both_caches) ... ok
+test_decode_split_kv_and_device_lengths (demo.test_gpu_compatibility.TestAttentionPortability.test_decode_split_kv_and_device_lengths) ... ok
+test_prefill_partial_tiles_with_rope (demo.test_gpu_compatibility.TestAttentionPortability.test_prefill_partial_tiles_with_rope) ... ok
+test_cancel_speculative_then_generate_again (demo.test_comparison_gpu.TestComparisonGPU.test_cancel_speculative_then_generate_again) ... ok
+test_eos_and_conversation_history (demo.test_comparison_gpu.TestComparisonGPU.test_eos_and_conversation_history) ... ok
+test_gammas_and_token_boundaries (demo.test_comparison_gpu.TestComparisonGPU.test_gammas_and_token_boundaries) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 19.258s
+
+OK

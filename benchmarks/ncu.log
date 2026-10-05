@@ -1,0 +1,8 @@
+==WARNING== Note: Running with unmodified GPU clocks. If not controlled otherwise, profiling results may be inconsistent.
+==PROF== Connected to process 30600 (/usr/bin/python3.12)
+==PROF== Connected to process 30655 (/usr/bin/nvidia-smi)
+==PROF== Disconnected from process 30655
+Profiling target layer 0: prefix=512, query=1, iterations=1
+==ERROR== ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU Performance Counters on the target device 0. For instructions on enabling permissions and to get more information see https://developer.nvidia.com/ERR_NVGPUCTRPERM
+Profile region completed; outputs match unannotated production layer bitwise.
+==PROF== Disconnected from process 30600

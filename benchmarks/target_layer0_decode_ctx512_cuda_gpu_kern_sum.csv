@@ -1,0 +1,9 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+82.3,4318677,30,143955.9,143600.5,143328,145505,683.6,"std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __half, __half, __half, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __half>, cublasGemvTensorStridedBatched<const __half>, cublasGemvTensorStridedBatched<__half>, float>>(T13)"
+12.9,675685,20,33784.3,33888.0,29217,38209,4188.4,"std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __half, __half, __half, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __half>, cublasGemvTensorStridedBatched<const __half>, cublasGemvTensorStridedBatched<__half>, float>>(T13)"
+2.9,152994,10,15299.4,15264.0,15232,15648,125.6,"void decode_attn_split_kernel<(int)1, (int)128, (int)32, (int)128>(const __half *, const __half *, const __half *, float *, float *, float *, float, int, int, int, int, int, const __half *, const __half *, const long *)"
+0.7,34688,20,1734.4,1696.0,1664,2528,187.6,"rmsnorm_forward_kernel_vectorized(const __half *, const __half *, __half *, int, float)"
+0.4,21120,20,1056.0,1056.0,1056,1056,0.0,"residual_add_kernel(const __half *, const __half *, __half *, long)"
+0.4,21024,10,2102.4,2112.0,2048,2144,30.4,"void decode_attn_combine_kernel<(int)1, (int)128>(const float *, const float *, const float *, __half *, int, int)"
+0.2,12800,10,1280.0,1280.0,1248,1376,37.0,"rope_kv_write_kernel(const __half *, const int4 *, __half *, int4 *, const __half *, const __half *, int, int, int, int, int, const long *)"
+0.2,11648,10,1164.8,1152.0,1152,1184,16.5,"swiglu_act_kernel(const __half *, const __half *, __half *, long)"

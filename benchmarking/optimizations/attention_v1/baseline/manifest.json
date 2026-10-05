@@ -1,0 +1,15 @@
+{
+  "git_commit": "5084e3a99225d31ded46b79c96dedc3e963277ef",
+  "files": {
+    "runtime/production_kernels/target/attention/__init__.py": "22ee3aac9b965c42ee6bd046a6d2c95c451670680eb69e1281c78d542cd8f2b5",
+    "runtime/production_kernels/target/attention/kernel.cu": "114fc642383c2edff8dfb4463eca6e22c58322e7596f289dd77a126e97002407",
+    "runtime/production_kernels/target/attention/ops.py": "cf44b8adacc8e5910fbe02140b964889e0bba0a1682d3f977001d1166845798c",
+    "runtime/production_kernels/target/attention/kernel_walkthrough.md": "bc7fe37f609e94775757e8f3ffa9cedfd6278db5144111d062c3c81618cb220e",
+    "runtime/production_kernels/target/attention/bindings.cpp": "9157cfcceeef60faeb3dbfaf9d42f46f0de08076d739ac077730a8f13705d8a6",
+    "runtime/production_kernels/draft/attention/__init__.py": "8ec88964480c11d94c039d5da1db61c689438a30c682f4361dfc8144cdb7d7e1",
+    "runtime/production_kernels/draft/attention/kernel.cu": "32da086b47299cc95718b4ab12082fe7d5d71edaa2cdc46de26e54896a7eaa74",
+    "runtime/production_kernels/draft/attention/ops.py": "fad7a66d83604fe34ed56d68bb11480c942da16ec76e703788d01f890f6e9904",
+    "runtime/production_kernels/draft/attention/bindings.cpp": "4f09a5b9771f095788ff6145ee9f38c70ac42ac7a0b64afea97c4d58c7f11049",
+    "demo/WALKTHROUGH.md": "ec4d3899946aeb0b57150e6be7bdded1a07313a3d5937f059ac46b591f4ddc22"
+  }
+}

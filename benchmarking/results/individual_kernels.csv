@@ -1,0 +1,133 @@
+role,operation,query_tokens,context,kernel,logical_bytes,useful_flops,arithmetic_intensity,theoretical_us,warm_profile_us,cold_profile_us,dram_reference_pct,cache_note
+target,embedding,1,1,embedding_kernel,14344,0,0.0,0.01423015873015873,3.904,8.896,0.15996131666095695,128 MiB flush precedes operation
+target,rmsnorm,1,1,rmsnorm_forward_kernel_vectorized,21504,14338,0.6667596726190477,0.021333333333333333,1.504,2.528,0.8438818565400844,128 MiB flush precedes operation
+target,residual,1,1,residual_add_kernel,21504,3584,0.16666666666666666,0.021333333333333333,0.897,1.888,1.1299435028248588,128 MiB flush precedes operation
+target,swiglu_activation,1,1,swiglu_act_kernel,113664,75776,0.6666666666666666,0.11276190476190476,0.992,2.016,5.593348450491307,128 MiB flush precedes operation
+target,rope_kv_write,1,1,rope_kv_write_kernel,4352,1536,0.35294117647058826,0.004317460317460317,1.024,1.888,0.22867904223836427,128 MiB flush precedes operation
+target,embedding,2,2,embedding_kernel,28688,0,0.0,0.02846031746031746,3.968,8.737,0.3257447345807195,128 MiB flush precedes operation
+target,rmsnorm,2,2,rmsnorm_forward_kernel_vectorized,35840,28676,0.8001116071428571,0.035555555555555556,1.504,2.432,1.4619883040935673,128 MiB flush precedes operation
+target,residual,2,2,residual_add_kernel,43008,7168,0.16666666666666666,0.042666666666666665,0.896,1.632,2.6143790849673203,128 MiB flush precedes operation
+target,swiglu_activation,2,2,swiglu_act_kernel,227328,151552,0.6666666666666666,0.22552380952380952,1.088,2.144,10.518834399431412,128 MiB flush precedes operation
+target,rope_kv_write,2,2,rope_kv_write_kernel,8704,3072,0.35294117647058826,0.008634920634920634,1.121,1.984,0.43522785458269325,128 MiB flush precedes operation
+target,embedding,4,4,embedding_kernel,57376,0,0.0,0.05692063492063492,4.448,9.184,0.6197804324982026,128 MiB flush precedes operation
+target,rmsnorm,4,4,rmsnorm_forward_kernel_vectorized,64512,57352,0.8890128968253969,0.064,1.632,2.592,2.4691358024691357,128 MiB flush precedes operation
+target,residual,4,4,residual_add_kernel,86016,14336,0.16666666666666666,0.08533333333333333,0.992,1.952,4.371584699453552,128 MiB flush precedes operation
+target,swiglu_activation,4,4,swiglu_act_kernel,454656,303104,0.6666666666666666,0.45104761904761903,1.12,2.304,19.576719576719576,128 MiB flush precedes operation
+target,rope_kv_write,4,4,rope_kv_write_kernel,17408,6144,0.35294117647058826,0.01726984126984127,1.152,2.08,0.8302808302808302,128 MiB flush precedes operation
+target,embedding,5,5,embedding_kernel,71720,0,0.0,0.07115079365079365,4.448,9.281,0.7666285276456594,128 MiB flush precedes operation
+target,rmsnorm,5,5,rmsnorm_forward_kernel_vectorized,78848,71690,0.9092177353896104,0.07822222222222222,1.633,2.688,2.91005291005291,128 MiB flush precedes operation
+target,residual,5,5,residual_add_kernel,107520,17920,0.16666666666666666,0.10666666666666667,0.992,1.824,5.847953216374269,128 MiB flush precedes operation
+target,swiglu_activation,5,5,swiglu_act_kernel,568320,378880,0.6666666666666666,0.5638095238095238,1.152,2.816,20.02164502164502,128 MiB flush precedes operation
+target,rope_kv_write,5,5,rope_kv_write_kernel,21760,7680,0.35294117647058826,0.02158730158730159,1.312,2.496,0.864875864875865,128 MiB flush precedes operation
+target,embedding,8,8,embedding_kernel,114752,0,0.0,0.11384126984126984,4.48,9.312,1.222522227676867,128 MiB flush precedes operation
+target,rmsnorm,8,8,rmsnorm_forward_kernel_vectorized,121856,114704,0.9413077731092437,0.12088888888888889,1.632,2.592,4.6639231824417005,128 MiB flush precedes operation
+target,residual,8,8,residual_add_kernel,172032,28672,0.16666666666666666,0.17066666666666666,0.992,2.24,7.619047619047619,128 MiB flush precedes operation
+target,swiglu_activation,8,8,swiglu_act_kernel,909312,606208,0.6666666666666666,0.9020952380952381,1.216,3.616,24.947324062368306,128 MiB flush precedes operation
+target,rope_kv_write,8,8,rope_kv_write_kernel,34816,12288,0.35294117647058826,0.03453968253968254,1.344,2.624,1.3162988772744868,128 MiB flush precedes operation
+target,embedding,9,9,embedding_kernel,129096,0,0.0,0.12807142857142856,4.48,9.152,1.399381868131868,128 MiB flush precedes operation
+target,rmsnorm,9,9,rmsnorm_forward_kernel_vectorized,136192,129042,0.9475005874060151,0.1351111111111111,1.664,2.56,5.277777777777777,128 MiB flush precedes operation
+target,residual,9,9,residual_add_kernel,193536,32256,0.16666666666666666,0.192,0.992,2.113,9.086606720302887,128 MiB flush precedes operation
+target,swiglu_activation,9,9,swiglu_act_kernel,1022976,681984,0.6666666666666666,1.014857142857143,1.216,3.776,26.876513317191286,128 MiB flush precedes operation
+target,rope_kv_write,9,9,rope_kv_write_kernel,39168,13824,0.35294117647058826,0.038857142857142854,1.536,2.848,1.364365971107544,128 MiB flush precedes operation
+target,embedding,128,128,embedding_kernel,1836032,0,0.0,1.8214603174603174,4.576,10.976,16.59493729464575,128 MiB flush precedes operation
+target,rmsnorm,128,128,rmsnorm_forward_kernel_vectorized,1842176,1835264,0.9962479155086159,1.8275555555555556,2.496,4.608,39.6604938271605,128 MiB flush precedes operation
+target,residual,128,128,residual_add_kernel,2752512,458752,0.16666666666666666,2.7306666666666666,1.376,5.856,46.63023679417122,128 MiB flush precedes operation
+target,swiglu_activation,128,128,swiglu_act_kernel,14548992,9699328,0.6666666666666666,14.433523809523809,4.192,22.145,65.17734842864668,128 MiB flush precedes operation
+target,rope_kv_write,128,128,rope_kv_write_kernel,557056,196608,0.35294117647058826,0.5526349206349206,7.8075,14.816,3.7299873153004897,128 MiB flush precedes operation
+target,embedding,512,512,embedding_kernel,7344128,0,0.0,7.28584126984127,4.896,18.304,39.80463980463981,128 MiB flush precedes operation
+target,rmsnorm,512,512,rmsnorm_forward_kernel_vectorized,7347200,7341056,0.9991637630662021,7.288888888888889,3.776,11.744,62.064789585225554,128 MiB flush precedes operation
+target,residual,512,512,residual_add_kernel,11010048,1835008,0.16666666666666666,10.922666666666666,3.424,15.232,71.70868347338936,128 MiB flush precedes operation
+target,swiglu_activation,512,512,swiglu_act_kernel,58195968,38797312,0.6666666666666666,57.734095238095236,29.1685,68.545,84.22801843766173,128 MiB flush precedes operation
+target,rope_kv_write,512,512,rope_kv_write_kernel,2228224,786432,0.35294117647058826,2.2105396825396824,27.936,52.288,4.227623321870568,128 MiB flush precedes operation
+target,embedding,1742,1742,embedding_kernel,24987248,0,0.0,24.78893650793651,10.72,47.007,52.7345640179899,128 MiB flush precedes operation
+target,rmsnorm,1742,1742,rmsnorm_forward_kernel_vectorized,24980480,24976796,0.999852524851404,24.782222222222224,8.32,29.376,84.36213991769547,128 MiB flush precedes operation
+target,residual,1742,1742,residual_add_kernel,37459968,6243328,0.16666666666666666,37.16266666666667,8.288,45.953,80.87103489797546,128 MiB flush precedes operation
+target,swiglu_activation,1742,1742,swiglu_act_kernel,198002688,132001792,0.6666666666666666,196.4312380952381,212.5935,220.098,89.24717084900274,128 MiB flush precedes operation
+target,rope_kv_write,1742,1742,rope_kv_write_kernel,7581184,2675712,0.35294117647058826,7.521015873015873,86.177,166.115,4.5275958661264015,128 MiB flush precedes operation
+target,decode_attention,1,128,decode_attn_kernel,276736,1845760,6.669750231267345,0.27453968253968253,12.0,20.192,1.3596458128946243,128 MiB flush precedes operation
+target,verify_attention,2,128,decode_attn_kernel,291328,3677184,12.622144112478031,0.289015873015873,13.024,21.76,1.3281979458450046,128 MiB flush precedes operation
+target,verify_attention,4,128,decode_attn_kernel,320512,7297024,22.766773162939298,0.31796825396825396,15.968,24.065,1.3212892331944897,128 MiB flush precedes operation
+target,verify_attention,5,128,decode_attn_kernel,335104,9085440,27.112299465240643,0.33244444444444443,19.52,28.142,1.1813106546956307,128 MiB flush precedes operation
+target,verify_attention,8,128,decode_attn_kernel,378880,14364672,37.913513513513514,0.37587301587301586,25.249,33.216,1.1316022876716518,128 MiB flush precedes operation
+target,verify_attention,9,128,decode_attn_kernel,393472,16095744,40.90696161353286,0.39034920634920633,29.024,37.825,1.031987326765912,128 MiB flush precedes operation
+target,prefill_attention,128,128,flash_attention_kernel,2129920,119734272,56.215384615384615,2.1130158730158732,16.96,25.568,8.26429862725232,128 MiB flush precedes operation
+target,decode_attention,1,512,decode_attn_split_kernel,1085120,7361536,6.784075493954585,1.0765079365079364,22.496,38.56,2.7917736942633207,128 MiB flush precedes operation
+target,decode_attention,1,512,decode_attn_combine_kernel,36288,25312,0.6975308641975309,0.036,1.472,1.44,2.5,scratch is produced by preceding split kernel
+target,verify_attention,2,512,decode_attn_split_kernel,1121664,14708736,13.113317357069496,1.1127619047619048,23.712,39.969,2.7840624102727234,128 MiB flush precedes operation
+target,verify_attention,2,512,decode_attn_combine_kernel,72576,50624,0.6975308641975309,0.072,1.728,1.696,4.245283018867924,scratch is produced by preceding split kernel
+target,verify_attention,4,512,decode_attn_split_kernel,1194752,29360128,24.57424469680737,1.1852698412698413,32.161,48.257,2.4561614714338673,128 MiB flush precedes operation
+target,verify_attention,4,512,decode_attn_combine_kernel,145152,101248,0.6975308641975309,0.144,2.528,2.529,5.6939501779359425,scratch is produced by preceding split kernel
+target,verify_attention,5,512,decode_attn_split_kernel,1231296,36664320,29.777015437392794,1.2215238095238095,39.712,56.16,2.175078008411342,128 MiB flush precedes operation
+target,verify_attention,5,512,decode_attn_combine_kernel,181440,126560,0.6975308641975309,0.18,3.04,3.008,5.98404255319149,scratch is produced by preceding split kernel
+target,verify_attention,8,512,decode_attn_split_kernel,1340928,58490880,43.61970217640321,1.3302857142857143,53.505,67.072,1.9833696837513632,128 MiB flush precedes operation
+target,verify_attention,8,512,decode_attn_combine_kernel,290304,202496,0.6975308641975309,0.288,4.064,4.064,7.086614173228345,scratch is produced by preceding split kernel
+target,verify_attention,9,512,decode_attn_split_kernel,1377472,65737728,47.72345862565628,1.3665396825396825,59.904,75.905,1.800328940833519,128 MiB flush precedes operation
+target,verify_attention,9,512,decode_attn_combine_kernel,326592,227808,0.6975308641975309,0.324,4.192,4.288,7.555970149253731,scratch is produced by preceding split kernel
+target,prefill_attention,512,512,flash_attention_kernel,8519680,1888223232,221.63076923076923,11.429922711864407,77.696,89.665,12.747362640790058,128 MiB flush precedes operation
+target,decode_attention,1,1742,decode_attn_split_kernel,3662400,25037824,6.836452599388379,3.6333333333333333,29.632,53.793,6.754286493285991,128 MiB flush precedes operation
+target,decode_attention,1,1742,decode_attn_combine_kernel,94528,68768,0.7274881516587678,0.09377777777777778,1.952,1.984,4.726702508960574,scratch is produced by preceding split kernel
+target,verify_attention,2,1742,decode_attn_split_kernel,3757184,50061312,13.324157667018703,3.727365079365079,37.216,58.784,6.340781640182837,128 MiB flush precedes operation
+target,verify_attention,2,1742,decode_attn_combine_kernel,189056,137536,0.7274881516587678,0.18755555555555556,2.304,2.336,8.028919330289193,scratch is produced by preceding split kernel
+target,verify_attention,4,1742,decode_attn_split_kernel,3946752,100065280,25.353830187455408,3.9154285714285715,53.92,72.993,5.364115149985028,128 MiB flush precedes operation
+target,verify_attention,4,1742,decode_attn_combine_kernel,378112,275072,0.7274881516587678,0.3751111111111111,3.296,3.264,11.492374727668846,scratch is produced by preceding split kernel
+target,verify_attention,5,1742,decode_attn_split_kernel,4041536,125045760,30.940157405501274,4.009460317460317,62.176,81.89,4.896153764147414,128 MiB flush precedes operation
+target,verify_attention,5,1742,decode_attn_combine_kernel,472640,343840,0.7274881516587678,0.4688888888888889,3.936,3.872,12.109733700642792,scratch is produced by preceding split kernel
+target,verify_attention,8,1742,decode_attn_split_kernel,4325888,199901184,46.21043910521955,4.291555555555555,96.129,111.777,3.8393905325384963,128 MiB flush precedes operation
+target,verify_attention,8,1742,decode_attn_combine_kernel,756224,550144,0.7274881516587678,0.7502222222222222,5.28,5.28,14.20875420875421,scratch is produced by preceding split kernel
+target,verify_attention,9,1742,decode_attn_split_kernel,4420672,224824320,50.8574985884499,4.385587301587302,112.3845,131.967,3.323245433773066,128 MiB flush precedes operation
+target,verify_attention,9,1742,decode_attn_combine_kernel,850752,618912,0.7274881516587678,0.844,5.696,5.696,14.817415730337078,scratch is produced by preceding split kernel
+target,prefill_attention,1742,1742,flash_attention_kernel,28986880,21782971392,751.4769230769231,131.85818033898306,543.4275,569.027,23.172570078218264,128 MiB flush precedes operation
+draft,embedding,1,1,embedding_kernel,3592,0,0.0,0.0035634920634920633,1.6,3.36,0.10605631141345426,128 MiB flush precedes operation
+draft,rmsnorm,1,1,rmsnorm_forward_kernel_vectorized,5376,3586,0.6670386904761905,0.005333333333333333,1.312,2.112,0.2525252525252525,128 MiB flush precedes operation
+draft,residual,1,1,residual_add_kernel,5376,896,0.16666666666666666,0.005333333333333333,0.832,1.472,0.36231884057971014,128 MiB flush precedes operation
+draft,swiglu_activation,1,1,swiglu_act_kernel,29184,19456,0.6666666666666666,0.02895238095238095,0.992,1.92,1.507936507936508,128 MiB flush precedes operation
+draft,rope_kv_write_dev,1,1,rope_kv_write_kernel,1152,384,0.3333333333333333,0.001142857142857143,1.12,2.08,0.05494505494505495,128 MiB flush precedes operation
+draft,embedding,2,2,embedding_kernel,7184,0,0.0,0.007126984126984127,1.632,3.392,0.21011156034740938,128 MiB flush precedes operation
+draft,rmsnorm,2,2,rmsnorm_forward_kernel_vectorized,8960,7172,0.8004464285714286,0.008888888888888889,1.312,2.272,0.3912363067292645,128 MiB flush precedes operation
+draft,residual,2,2,residual_add_kernel,10752,1792,0.16666666666666666,0.010666666666666666,0.896,1.568,0.6802721088435374,128 MiB flush precedes operation
+draft,swiglu_activation,2,2,swiglu_act_kernel,58368,38912,0.6666666666666666,0.0579047619047619,0.992,2.016,2.872260015117158,128 MiB flush precedes operation
+draft,rope_kv_write,2,2,rope_kv_write_kernel,2304,768,0.3333333333333333,0.002285714285714286,1.024,2.176,0.10504201680672269,128 MiB flush precedes operation
+draft,embedding,4,4,embedding_kernel,14368,0,0.0,0.014253968253968253,1.76,3.424,0.41629580180982045,128 MiB flush precedes operation
+draft,rmsnorm,4,4,rmsnorm_forward_kernel_vectorized,16128,14344,0.8893849206349206,0.016,1.44,2.208,0.7246376811594203,128 MiB flush precedes operation
+draft,residual,4,4,residual_add_kernel,21504,3584,0.16666666666666666,0.021333333333333333,0.96,1.696,1.2578616352201257,128 MiB flush precedes operation
+draft,swiglu_activation,4,4,swiglu_act_kernel,116736,77824,0.6666666666666666,0.1158095238095238,1.087,1.984,5.837173579109063,128 MiB flush precedes operation
+draft,rope_kv_write,4,4,rope_kv_write_kernel,4608,1536,0.3333333333333333,0.004571428571428572,1.12,2.016,0.22675736961451248,128 MiB flush precedes operation
+draft,embedding,5,5,embedding_kernel,17960,0,0.0,0.01781746031746032,1.76,3.584,0.49713895975056693,128 MiB flush precedes operation
+draft,rmsnorm,5,5,rmsnorm_forward_kernel_vectorized,19712,17930,0.9095982142857143,0.019555555555555555,1.408,2.176,0.8986928104575163,128 MiB flush precedes operation
+draft,residual,5,5,residual_add_kernel,26880,4480,0.16666666666666666,0.02666666666666667,0.96,1.887,1.4131778837661193,128 MiB flush precedes operation
+draft,swiglu_activation,5,5,swiglu_act_kernel,145920,97280,0.6666666666666666,0.14476190476190476,1.088,1.952,7.41608118657299,128 MiB flush precedes operation
+draft,rope_kv_write,5,5,rope_kv_write_kernel,5760,1920,0.3333333333333333,0.005714285714285714,1.151,2.144,0.2665245202558635,128 MiB flush precedes operation
+draft,embedding,8,8,embedding_kernel,28736,0,0.0,0.028507936507936506,1.792,3.392,0.8404462413896375,128 MiB flush precedes operation
+draft,rmsnorm,8,8,rmsnorm_forward_kernel_vectorized,30464,28688,0.9417016806722689,0.030222222222222223,1.44,2.496,1.210826210826211,128 MiB flush precedes operation
+draft,residual,8,8,residual_add_kernel,43008,7168,0.16666666666666666,0.042666666666666665,0.992,1.6,2.6666666666666665,128 MiB flush precedes operation
+draft,swiglu_activation,8,8,swiglu_act_kernel,233472,155648,0.6666666666666666,0.2316190476190476,1.088,2.208,10.48999309868875,128 MiB flush precedes operation
+draft,rope_kv_write,8,8,rope_kv_write_kernel,9216,3072,0.3333333333333333,0.009142857142857144,1.12,1.984,0.46082949308755766,128 MiB flush precedes operation
+draft,embedding,9,9,embedding_kernel,32328,0,0.0,0.03207142857142857,1.792,3.52,0.9111201298701298,128 MiB flush precedes operation
+draft,rmsnorm,9,9,rmsnorm_forward_kernel_vectorized,34048,32274,0.9478970864661654,0.033777777777777775,1.44,2.176,1.552287581699346,128 MiB flush precedes operation
+draft,residual,9,9,residual_add_kernel,48384,8064,0.16666666666666666,0.048,0.96,1.824,2.631578947368421,128 MiB flush precedes operation
+draft,swiglu_activation,9,9,swiglu_act_kernel,262656,175104,0.6666666666666666,0.26057142857142856,1.088,2.144,12.153518123667377,128 MiB flush precedes operation
+draft,rope_kv_write,9,9,rope_kv_write_kernel,10368,3456,0.3333333333333333,0.010285714285714285,1.28,2.336,0.44031311154598823,128 MiB flush precedes operation
+draft,embedding,128,128,embedding_kernel,459776,0,0.0,0.4561269841269841,1.92,3.904,11.683580536039551,128 MiB flush precedes operation
+draft,rmsnorm,128,128,rmsnorm_forward_kernel_vectorized,460544,459008,0.9966648137854364,0.4568888888888889,1.856,2.848,16.042446941323348,128 MiB flush precedes operation
+draft,residual,128,128,residual_add_kernel,688128,114688,0.16666666666666666,0.6826666666666666,1.056,2.944,23.18840579710145,128 MiB flush precedes operation
+draft,swiglu_activation,128,128,swiglu_act_kernel,3735552,2490368,0.6666666666666666,3.705904761904762,1.664,6.528,56.769374416433244,128 MiB flush precedes operation
+draft,rope_kv_write,128,128,rope_kv_write_kernel,147456,49152,0.3333333333333333,0.1462857142857143,4.32,8.192,1.7857142857142858,128 MiB flush precedes operation
+draft,embedding,512,512,embedding_kernel,1839104,0,0.0,1.8245079365079364,2.176,6.048,30.16712857982699,128 MiB flush precedes operation
+draft,rmsnorm,512,512,rmsnorm_forward_kernel_vectorized,1836800,1836032,0.999581881533101,1.8222222222222222,2.016,4.607,39.55333670983769,128 MiB flush precedes operation
+draft,residual,512,512,residual_add_kernel,2752512,458752,0.16666666666666666,2.7306666666666666,1.376,5.76,47.40740740740741,128 MiB flush precedes operation
+draft,swiglu_activation,512,512,swiglu_act_kernel,14942208,9961472,0.6666666666666666,14.823619047619047,4.256,22.112,67.03879815312521,128 MiB flush precedes operation
+draft,rope_kv_write,512,512,rope_kv_write_kernel,589824,196608,0.3333333333333333,0.5851428571428572,14.368,26.24,2.2299651567944254,128 MiB flush precedes operation
+draft,embedding,1742,1742,embedding_kernel,6257264,0,0.0,6.207603174603174,3.488,12.769,48.61463837891122,128 MiB flush precedes operation
+draft,rmsnorm,1742,1742,rmsnorm_forward_kernel_vectorized,6245120,6246812,1.0002709315433491,6.195555555555556,3.408,9.312,66.53302787323406,128 MiB flush precedes operation
+draft,residual,1742,1742,residual_add_kernel,9364992,1560832,0.16666666666666666,9.290666666666667,2.913,13.216,70.29862792574657,128 MiB flush precedes operation
+draft,swiglu_activation,1742,1742,swiglu_act_kernel,50838528,33892352,0.6666666666666666,50.435047619047616,11.392,60.353,83.56676158442433,128 MiB flush precedes operation
+draft,rope_kv_write,1742,1742,rope_kv_write_kernel,2006784,668928,0.3333333333333333,1.9908571428571429,46.144,86.08,2.312798725438131,128 MiB flush precedes operation
+draft,decode_attention_dev,1,128,decode_attn_split_kernel,97024,480256,4.949868073878628,0.09625396825396826,3.168,5.216,1.8453598208199438,128 MiB flush precedes operation
+draft,decode_attention_dev,1,128,decode_attn_combine_kernel,31360,22848,0.7285714285714285,0.03111111111111111,1.536,1.568,1.9841269841269842,scratch is produced by preceding split kernel
+draft,prefill_attention,128,128,flash_attention_kernel,540672,29933568,55.36363636363637,0.5363809523809524,10.911,16.224,3.3060956137879214,128 MiB flush precedes operation
+draft,decode_attention_dev,1,512,decode_attn_split_kernel,293632,1856512,6.32258064516129,0.2913015873015873,4.832,8.256,3.5283622492924818,128 MiB flush precedes operation
+draft,decode_attention_dev,1,512,decode_attn_combine_kernel,31360,22848,0.7285714285714285,0.03111111111111111,1.6,1.6,1.9444444444444444,scratch is produced by preceding split kernel
+draft,prefill_attention,512,512,flash_attention_kernel,2162688,472055808,218.27272727272728,2.8574806779661017,32.288,43.584,6.556260733218845,128 MiB flush precedes operation
+draft,decode_attention_dev,1,1742,decode_attn_split_kernel,923392,6264832,6.784585528139728,0.916063492063492,12.943999999999999,21.472,4.266316561398528,128 MiB flush precedes operation
+draft,decode_attention_dev,1,1742,decode_attn_combine_kernel,31360,22848,0.7285714285714285,0.03111111111111111,1.6,1.6,1.9444444444444444,scratch is produced by preceding split kernel
+draft,prefill_attention,1742,1742,flash_attention_kernel,7358208,5445742848,740.0909090909091,32.964545084745765,187.137,194.273,16.968155680277633,128 MiB flush precedes operation

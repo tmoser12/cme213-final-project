@@ -1,0 +1,7 @@
+Generating SQLite file benchmarks/target_layer0_decode_ctx512.sqlite from benchmarks/target_layer0_decode_ctx512.nsys-rep
+Processing [benchmarks/target_layer0_decode_ctx512.sqlite] with [/workspace/cme213-demo/benchmarks/tools/nsight-systems-2026.2.1/target-linux-x64/reports/cuda_gpu_kern_sum.py] to [benchmarks/target_layer0_decode_ctx512_cuda_gpu_kern_sum.csv]... PROCESSED
+
+Processing [benchmarks/target_layer0_decode_ctx512.sqlite] with [/workspace/cme213-demo/benchmarks/tools/nsight-systems-2026.2.1/target-linux-x64/reports/nvtx_pushpop_sum.py] to [benchmarks/target_layer0_decode_ctx512_nvtx_pushpop_sum.csv]... PROCESSED
+
+Processing [benchmarks/target_layer0_decode_ctx512.sqlite] with [/workspace/cme213-demo/benchmarks/tools/nsight-systems-2026.2.1/target-linux-x64/reports/cuda_api_sum.py] to [benchmarks/target_layer0_decode_ctx512_cuda_api_sum.csv]... PROCESSED
+

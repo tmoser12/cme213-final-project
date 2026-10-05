@@ -1,0 +1,4 @@
+{
+  "binaries/target/target_attention_ops.cpython-312-x86_64-linux-gnu.so": "1519e6af8e87d935f95b0e56fa70d042d42c1b436b3c98fd8c0e02f3fde42231",
+  "binaries/draft/draft_attention_ops.cpython-312-x86_64-linux-gnu.so": "6ef6c37944ec1b953036337f8052c1d92087d15970901d90edf2ee36dd2b03c3"
+}

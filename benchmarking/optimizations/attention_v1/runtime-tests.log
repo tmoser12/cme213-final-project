@@ -1,0 +1,60 @@
+test_prebuilt_extension_importable (runtime.tests.test_attention.TestAttentionAot.test_prebuilt_extension_importable) ... ok
+test_decode_single_token (runtime.tests.test_attention.TestDecodeAttnGpu.test_decode_single_token) ... ok
+test_small_q_verify (runtime.tests.test_attention.TestDecodeAttnGpu.test_small_q_verify) ... ok
+test_fused_attn_prefill (runtime.tests.test_attention.TestFusedAttnGpu.test_fused_attn_prefill) ... ok
+test_o_proj (runtime.tests.test_attention.TestOProjGpu.test_o_proj) ... ok
+test_o_proj_loaded_weights (runtime.tests.test_attention.TestOProjGpu.test_o_proj_loaded_weights) ... ok
+test_matches_eager_qkv (runtime.tests.test_attention.TestQkvProjGpu.test_matches_eager_qkv) ... ok
+test_rope_kv_write (runtime.tests.test_attention.TestRopeKvWriteGpu.test_rope_kv_write) ... ok
+test_decode_attn_dev_matches_host (runtime.tests.test_attention_dev_scalar.TestAttentionDevScalar.test_decode_attn_dev_matches_host) ... ok
+test_decode_attn_dev_matches_host_no_rope (runtime.tests.test_attention_dev_scalar.TestAttentionDevScalar.test_decode_attn_dev_matches_host_no_rope) ... ok
+test_dev_rejects_bad_scalar (runtime.tests.test_attention_dev_scalar.TestAttentionDevScalar.test_dev_rejects_bad_scalar) ... ok
+test_rope_kv_write_dev_matches_host (runtime.tests.test_attention_dev_scalar.TestAttentionDevScalar.test_rope_kv_write_dev_matches_host) ... ok
+test_small_q_attn_dev_matches_host (runtime.tests.test_attention_dev_scalar.TestAttentionDevScalar.test_small_q_attn_dev_matches_host) ... ok
+test_rope_graph_replay_updates_position (runtime.tests.test_attention_layouts.TestAttentionLayouts.test_rope_graph_replay_updates_position) ... ok
+test_rope_tiles_offsets_and_sentinels (runtime.tests.test_attention_layouts.TestAttentionLayouts.test_rope_tiles_offsets_and_sentinels) ... ok
+test_scalar_attention_all_query_sizes_and_split_boundary (runtime.tests.test_attention_layouts.TestAttentionLayouts.test_scalar_attention_all_query_sizes_and_split_boundary) ... ok
+test_decode_attn_dev_matches_host (runtime.tests.test_draft_attention_dev_scalar.TestDraftAttentionDevScalar.test_decode_attn_dev_matches_host) ... ok
+test_decode_attn_dev_matches_host_no_rope (runtime.tests.test_draft_attention_dev_scalar.TestDraftAttentionDevScalar.test_decode_attn_dev_matches_host_no_rope) ... ok
+test_rope_kv_write_dev_matches_host (runtime.tests.test_draft_attention_dev_scalar.TestDraftAttentionDevScalar.test_rope_kv_write_dev_matches_host) ... ok
+test_small_q_attn_dev_matches_host (runtime.tests.test_draft_attention_dev_scalar.TestDraftAttentionDevScalar.test_small_q_attn_dev_matches_host) ... ok
+test_graph_matches_eager_trajectory (runtime.tests.test_draft_decode_graph.TestDraftDecodeGraph.test_graph_matches_eager_trajectory) ... ok
+test_graph_reused_across_prefills (runtime.tests.test_draft_decode_graph.TestDraftDecodeGraph.test_graph_reused_across_prefills) ... ok
+test_decode_step_after_prefill (runtime.tests.test_draft_executor.TestDraftExecutorGpu.test_decode_step_after_prefill) ... Starting from v4.46, the `logits` model output will have the same type as the model (except at train time, where it will always be FP32)
+ok
+test_executor_uses_draft_kernels (runtime.tests.test_draft_executor.TestDraftExecutorGpu.test_executor_uses_draft_kernels) ... ok
+test_greedy_trajectory_matches_hf (runtime.tests.test_draft_executor.TestDraftExecutorGpu.test_greedy_trajectory_matches_hf) ... /workspace/cme213-demo/.venv/lib/python3.12/site-packages/transformers/generation/configuration_utils.py:601: UserWarning: `do_sample` is set to `False`. However, `temperature` is set to `0.7` -- this flag is only used in sample-based generation modes. You should set `do_sample=True` or unset `temperature`.
+  warnings.warn(
+/workspace/cme213-demo/.venv/lib/python3.12/site-packages/transformers/generation/configuration_utils.py:606: UserWarning: `do_sample` is set to `False`. However, `top_p` is set to `0.8` -- this flag is only used in sample-based generation modes. You should set `do_sample=True` or unset `top_p`.
+  warnings.warn(
+/workspace/cme213-demo/.venv/lib/python3.12/site-packages/transformers/generation/configuration_utils.py:623: UserWarning: `do_sample` is set to `False`. However, `top_k` is set to `20` -- this flag is only used in sample-based generation modes. You should set `do_sample=True` or unset `top_k`.
+  warnings.warn(
+The attention mask is not set and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+ok
+test_prefill_logits_match_hf (runtime.tests.test_draft_executor.TestDraftExecutorGpu.test_prefill_logits_match_hf) ... ok
+test_prebuilt_extension_importable (runtime.tests.test_embedding.TestEmbeddingAot.test_prebuilt_extension_importable) ... ok
+test_matches_hf_05b (runtime.tests.test_embedding.TestEmbeddingGpu.test_matches_hf_05b) ... ok
+test_matches_hf_7b (runtime.tests.test_embedding.TestEmbeddingGpu.test_matches_hf_7b) ... ok
+test_with_loaded_model_weights (runtime.tests.test_embedding.TestEmbeddingGpu.test_with_loaded_model_weights) ... ok
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:01<00:03,  1.03s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:01<00:01,  1.12it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:02<00:00,  1.18it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:03<00:00,  1.24it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:03<00:00,  1.19it/s]
+test_eight_tokens_from_short_prompt (runtime.tests.test_parity_greedy.TestGreedyDecodeTrajectory.test_eight_tokens_from_short_prompt) ... ok
+test_sixteen_tokens_from_minimal_prompt (runtime.tests.test_parity_greedy.TestGreedyDecodeTrajectory.test_sixteen_tokens_from_minimal_prompt) ... ok
+test_prebuilt_extension_importable (runtime.tests.test_residual_ops.TestResidualOpsAot.test_prebuilt_extension_importable) ... ok
+test_lm_head_matches_linear_05b (runtime.tests.test_residual_ops.TestResidualOpsGpu.test_lm_head_matches_linear_05b) ... ok
+test_lm_head_with_loaded_weights (runtime.tests.test_residual_ops.TestResidualOpsGpu.test_lm_head_with_loaded_weights) ... ok
+test_residual_add_bit_exact_7b (runtime.tests.test_residual_ops.TestResidualOpsGpu.test_residual_add_bit_exact_7b) ... ok
+test_prebuilt_extension_importable (runtime.tests.test_rmsnorm.TestRmsnormAot.test_prebuilt_extension_importable) ... ok
+test_forward_matches_hf_05b (runtime.tests.test_rmsnorm.TestRmsnormGpu.test_forward_matches_hf_05b) ... ok
+test_forward_matches_hf_7b (runtime.tests.test_rmsnorm.TestRmsnormGpu.test_forward_matches_hf_7b) ... ok
+test_forward_with_loaded_model_weights (runtime.tests.test_rmsnorm.TestRmsnormGpu.test_forward_with_loaded_model_weights)
+Uses real layer-0 input_layernorm weight from safetensors. ... ok
+test_workspace_bytes_is_zero (runtime.tests.test_rmsnorm.TestRmsnormInterface.test_workspace_bytes_is_zero) ... ok
+test_prebuilt_extension_importable (runtime.tests.test_swiglu.TestSwigluAot.test_prebuilt_extension_importable) ... ok
+test_forward_matches_hf_05b (runtime.tests.test_swiglu.TestSwigluGpu.test_forward_matches_hf_05b) ... ok
+test_forward_matches_hf_7b (runtime.tests.test_swiglu.TestSwigluGpu.test_forward_matches_hf_7b) ... ok
+test_with_loaded_layer0_weights (runtime.tests.test_swiglu.TestSwigluGpu.test_with_loaded_layer0_weights) ... ok
+
+----------------------------------------------------------------------
+Ran 45 tests in 101.815s
+
+OK

@@ -96,10 +96,12 @@ torch::Tensor qkv_proj_forward(torch::Tensor x,
 // single launch (removes K's extra global round-trip). cos/sin are [B, S, D]
 // (upper D/2 duplicates lower D/2), indexed by the LOCAL source row s; the
 // caller builds them at the K rows' absolute positions, so write_pos only
-// shifts the destination row in the cache. One block per (batch, kv_head).
+// shifts the destination row in the cache. Tile sequence rows across blocks.
 // WALKTHROUGH [TARGET_KV_WRITE] — see demo/WALKTHROUGH.md.
 // Fuse key rotation and cache write, copy values unchanged, and leave Q rotation
 // to attention. Device-scalar positions allow the same launch to be graph-replayed.
+constexpr int ROPE_ROWS_PER_BLOCK = 16;
+
 __global__ void rope_kv_write_kernel(
     const __half* __restrict__ new_k,     // [B, H_kv, S, D] src K (un-rotated)
     const int4*   __restrict__ new_v4,    // [B, H_kv, S, D] src V, viewed int4
@@ -118,11 +120,13 @@ __global__ void rope_kv_write_kernel(
     const int tid = threadIdx.x;
     const int half = D / 2;
     const int D_v4 = D / 8;
+    const int row_start = blockIdx.y * ROPE_ROWS_PER_BLOCK;
+    const int rows = min(ROPE_ROWS_PER_BLOCK, S - row_start);
 
     // --- V: pure int4 copy (not rotated) ------------------------------------
-    const int v_in_base  = bh * (S * D_v4);
-    const int v_out_base = bh * (max_seq * D_v4) + write_pos * D_v4;
-    const int v_vecs     = S * D_v4;
+    const int v_in_base  = (bh * S + row_start) * D_v4;
+    const int v_out_base = (bh * max_seq + write_pos + row_start) * D_v4;
+    const int v_vecs     = rows * D_v4;
     for (int i = tid; i < v_vecs; i += blockDim.x)
         cache_v4[v_out_base + i] = new_v4[v_in_base + i];
 
@@ -130,9 +134,9 @@ __global__ void rope_kv_write_kernel(
     const int k_in_base  = bh * S * D;                        // halves
     const int k_out_base = bh * max_seq * D + write_pos * D;  // halves
     const int cos_base   = b * S * D;                         // halves
-    const int total      = S * half;
+    const int total      = rows * half;
     for (int i = tid; i < total; i += blockDim.x) {
-        const int s = i / half;
+        const int s = row_start + i / half;
         const int d = i % half;
         const int koff = k_in_base + s * D;
         const float x0 = __half2float(new_k[koff + d]);
@@ -198,12 +202,14 @@ static void rope_kv_write_launch(const torch::Tensor& new_k, const torch::Tensor
     const int S       = static_cast<int>(new_k.size(2));
     const int D       = static_cast<int>(new_k.size(3));
     const int max_seq = static_cast<int>(cache_k.size(2));
+    if (S == 0) return;  // Preserve the empty-write no-op without a zero-sized grid.
 
     const int4* new_v4_ptr   = reinterpret_cast<const int4*>(new_v.data_ptr<at::Half>());
     int4*       cache_v4_ptr = reinterpret_cast<int4*>(cache_v.data_ptr<at::Half>());
 
     const int threads = 256;
-    const int blocks  = static_cast<int>(new_k.size(0)) * H_kv;
+    const dim3 blocks(static_cast<unsigned int>(new_k.size(0)) * H_kv,
+                      (S + ROPE_ROWS_PER_BLOCK - 1) / ROPE_ROWS_PER_BLOCK);
 
     rope_kv_write_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(new_k.data_ptr<at::Half>()),
@@ -703,7 +709,8 @@ __global__ void decode_attn_kernel(
 
     // --- Shared memory (~23 KB at Q_TOKENS=8; under the 48 KB Turing limit) --
     __shared__ __half q_sh[Q_TOKENS][D];          // query rows (loaded once)
-    __shared__ __half k_sh[KV_TILE][D];           // current KV tile
+    // An odd stride in 32-bit bank words avoids column-read bank conflicts.
+    __shared__ __half k_sh[KV_TILE][D + 2];           // current KV tile
     __shared__ __half v_sh[KV_TILE][D];
     __shared__ float  acc[Q_TOKENS][D];           // running output accumulator
     __shared__ float  scores[Q_TOKENS][KV_TILE];  // QK^T, then reused for probs
@@ -905,7 +912,8 @@ __global__ void decode_attn_split_kernel(
     const int kv_end   = (kv_start + split_len < cur_len) ? (kv_start + split_len) : cur_len;
 
     __shared__ __half q_sh[Q_TOKENS][D];
-    __shared__ __half k_sh[KV_TILE][D];
+    // An odd stride in 32-bit bank words avoids column-read bank conflicts.
+    __shared__ __half k_sh[KV_TILE][D + 2];
     __shared__ __half v_sh[KV_TILE][D];
     __shared__ float  acc[Q_TOKENS][D];
     __shared__ float  scores[Q_TOKENS][KV_TILE];

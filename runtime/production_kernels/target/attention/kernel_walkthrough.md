@@ -37,7 +37,7 @@ The executor splits the output into contiguous `Q:[B, 28, S, 128]` and `K/V:[B, 
 ---
 
 ## 2. Phase 2: RoPE and the KV Cache Write
-`rope_kv_write_kernel` launches **one block per `(batch, kv_head)`**, with **256 threads per block**. The block walks across all new rows for that KV head.
+`rope_kv_write_kernel` launches **one block per `(batch, kv_head, 16-row sequence tile)`**, with **256 threads per block**. The final tile masks rows past the input length. At batch one and 1,742 input rows, the target launches 436 blocks instead of four; single-token decode still uses four blocks.
 
 **Step 2a: Copy V**
 V is not rotated. Its pointers are viewed as `int4*`, so each copy moves 128 bits, or eight FP16 values. These are raw bits; the cast does not numerically convert V into integers.
@@ -145,7 +145,7 @@ A 64-query prefill tile is a poor fit when we only have one new token. The decod
 
 `decode_attn_forward` accepts exactly **one query token**. `small_q_attn_forward` accepts **1 through 9 query tokens**, with a separate compile-time specialization for each length. Both use the same launch helper and can select either decode implementation.
 
-In the single-block version, **one block owns one `(batch, query_head)`** and streams 32 KV rows at a time. Q is loaded once into shared memory and optionally rotated there. The block also keeps shared FP32 scores, output accumulators, and one running softmax state per query row.
+In the single-block version, **one block owns one `(batch, query_head)`** and streams 32 KV rows at a time. Q is loaded once into shared memory and optionally rotated there. The block also keeps shared FP32 scores, output accumulators, and one running softmax state per query row. The scalar kernels pad their K tile to `[32][D + 2]`: neighboring threads reading different keys at the same channel now access successive shared-memory banks rather than the same bank. The WMMA prefill layout is unchanged.
 
 The new K/V rows must already be in the cache. Query row `r` represents position `cur_len - Q_TOKENS + r`, so the same causal rule applies during speculative verification: a candidate can see earlier candidates and itself, but not later candidates.
 

@@ -20,3 +20,10 @@ __pycache__/
 CLAUDE.md
 tmp.md
 .DS_Store
+
+# Keep the reproducible benchmark evidence with its scripts.
+!benchmarking/results/
+!benchmarking/results/**
+
+# Keep the small, validated decoder trace; ignore other generated profiles.
+!benchmarks/target_layer0_decode_ctx512.nsys-rep

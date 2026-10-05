@@ -1,0 +1,19 @@
+test_rope_graph_replay_updates_position (runtime.tests.test_attention_layouts.TestAttentionLayouts.test_rope_graph_replay_updates_position) ... ok
+test_rope_tiles_offsets_and_sentinels (runtime.tests.test_attention_layouts.TestAttentionLayouts.test_rope_tiles_offsets_and_sentinels) ... ok
+test_scalar_attention_all_query_sizes_and_split_boundary (runtime.tests.test_attention_layouts.TestAttentionLayouts.test_scalar_attention_all_query_sizes_and_split_boundary) ... ok
+test_decode_attn_dev_matches_host (runtime.tests.test_attention_dev_scalar.TestAttentionDevScalar.test_decode_attn_dev_matches_host) ... ok
+test_decode_attn_dev_matches_host_no_rope (runtime.tests.test_attention_dev_scalar.TestAttentionDevScalar.test_decode_attn_dev_matches_host_no_rope) ... ok
+test_dev_rejects_bad_scalar (runtime.tests.test_attention_dev_scalar.TestAttentionDevScalar.test_dev_rejects_bad_scalar) ... ok
+test_rope_kv_write_dev_matches_host (runtime.tests.test_attention_dev_scalar.TestAttentionDevScalar.test_rope_kv_write_dev_matches_host) ... ok
+test_small_q_attn_dev_matches_host (runtime.tests.test_attention_dev_scalar.TestAttentionDevScalar.test_small_q_attn_dev_matches_host) ... ok
+test_decode_attn_dev_matches_host (runtime.tests.test_draft_attention_dev_scalar.TestDraftAttentionDevScalar.test_decode_attn_dev_matches_host) ... ok
+test_decode_attn_dev_matches_host_no_rope (runtime.tests.test_draft_attention_dev_scalar.TestDraftAttentionDevScalar.test_decode_attn_dev_matches_host_no_rope) ... ok
+test_rope_kv_write_dev_matches_host (runtime.tests.test_draft_attention_dev_scalar.TestDraftAttentionDevScalar.test_rope_kv_write_dev_matches_host) ... ok
+test_small_q_attn_dev_matches_host (runtime.tests.test_draft_attention_dev_scalar.TestDraftAttentionDevScalar.test_small_q_attn_dev_matches_host) ... ok
+test_decode_split_kv_and_device_lengths (demo.test_gpu_compatibility.TestAttentionPortability.test_decode_split_kv_and_device_lengths) ... ok
+test_prefill_partial_tiles_with_rope (demo.test_gpu_compatibility.TestAttentionPortability.test_prefill_partial_tiles_with_rope) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 0.473s
+
+OK
